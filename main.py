@@ -28,7 +28,7 @@ except ImportError:
 from .webui import run_server
 from .core.crawler import Crawler
 
-@register("astrbot_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.0")
+@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.0.0")
 class CodeforcesHelperPlugin(Star):
     db: aiosqlite.Connection
     db_path: Path
@@ -41,7 +41,7 @@ class CodeforcesHelperPlugin(Star):
         self.FONT_PATH = Path(__file__).parent / "resources" / "SourceHanSansSC-Bold.otf"
 
     async def initialize(self):
-        logger.info("Codeforces Helper v1.0 开始初始化...")
+        logger.info("Codeforces Helper v1.0.0 开始初始化...")
         await self.connect_db()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         settings = await self._get_all_settings()
