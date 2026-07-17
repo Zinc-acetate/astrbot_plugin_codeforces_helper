@@ -3,6 +3,8 @@
 import asyncio
 import aiohttp
 import time
+import os
+import sqlite3
 from pathlib import Path
 import aiosqlite
 from multiprocessing import Process
@@ -18,6 +20,7 @@ from astrbot.api.star import Context, Star, register
 from astrbot.api import logger
 from astrbot.core.message.components import Plain, Image
 from astrbot.core.message.message_event_result import MessageChain
+from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 try:
     from PIL import Image as PILImage, ImageDraw, ImageFont
@@ -28,7 +31,7 @@ except ImportError:
 from .webui import run_server
 from .core.crawler import Crawler
 
-@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.0.0")
+@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.0.1")
 class CodeforcesHelperPlugin(Star):
     db: aiosqlite.Connection
     db_path: Path
@@ -41,7 +44,7 @@ class CodeforcesHelperPlugin(Star):
         self.FONT_PATH = Path(__file__).parent / "resources" / "SourceHanSansSC-Bold.otf"
 
     async def initialize(self):
-        logger.info("Codeforces Helper v1.0.0 开始初始化...")
+        logger.info("Codeforces Helper v1.0.1 开始初始化...")
         await self.connect_db()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         settings = await self._get_all_settings()
@@ -57,9 +60,49 @@ class CodeforcesHelperPlugin(Star):
         if hasattr(self, 'db') and self.db: await self.db.close()
         logger.info("Codeforces Helper 已安全关闭。")
 
+    def _prepare_persistent_db(self) -> Path:
+        """使用 AstrBot 独立数据目录，并安全迁移旧版插件目录内的数据库。"""
+        data_dir = Path(get_astrbot_plugin_data_path()) / "astrbot_plugin_codeforces_helper"
+        data_dir.mkdir(parents=True, exist_ok=True)
+        target = data_dir / "codeforces_helper.db"
+        legacy = Path(__file__).parent / "data" / "codeforces_helper.db"
+
+        # 外部持久化库一旦存在，始终以它为准，防止旧库覆盖新数据。
+        if target.exists():
+            return target
+        if not legacy.exists():
+            return target
+
+        temporary = data_dir / f".{target.name}.migrating-{os.getpid()}"
+        temporary.unlink(missing_ok=True)
+        source_db = None
+        target_db = None
+        try:
+            # SQLite backup API 能正确复制 WAL 中尚未合并回主文件的数据。
+            source_db = sqlite3.connect(f"file:{legacy.resolve()}?mode=ro", uri=True)
+            target_db = sqlite3.connect(temporary)
+            source_db.backup(target_db)
+            target_db.commit()
+            integrity = target_db.execute("PRAGMA integrity_check").fetchone()
+            if not integrity or integrity[0] != "ok":
+                raise RuntimeError(f"数据库完整性检查失败: {integrity}")
+        except Exception:
+            temporary.unlink(missing_ok=True)
+            raise
+        finally:
+            if target_db is not None:
+                target_db.close()
+            if source_db is not None:
+                source_db.close()
+
+        # 同一文件系统内原子启用；迁移成功后保留旧库，便于人工回滚。
+        os.replace(temporary, target)
+        logger.info(f"旧数据库已安全迁移到持久化目录: {target}")
+        return target
+
     async def connect_db(self):
-        self.db_path = Path(__file__).parent / "data" / "codeforces_helper.db"
-        self.db_path.parent.mkdir(exist_ok=True)
+        self.db_path = self._prepare_persistent_db()
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db = await aiosqlite.connect(self.db_path); self.db.row_factory = aiosqlite.Row
         await self.db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);")
         await self.db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('report_enabled', 'true');")

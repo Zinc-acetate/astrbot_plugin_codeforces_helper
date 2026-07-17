@@ -14,7 +14,7 @@
 - `_conf_schema.json`：命令提示、Web 端口、管理员 QQ 与可选 CF API 凭证。
 - `metadata.yaml`：AstrBot 插件市场和加载元数据。
 - `NOTICE.md`：上游来源与修改声明。
-- `data/codeforces_helper.db`：SQLite 运行数据库，不纳入 Git。
+- `data/plugin_data/astrbot_plugin_codeforces_helper/codeforces_helper.db`：位于插件安装目录之外的 SQLite 持久化数据库，不纳入 Git。
 
 ## 插件身份
 

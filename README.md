@@ -162,13 +162,17 @@ QQ 号与姓名必填，其余字段可留空。例如：
 - 定时同步使用增量抓取；指定天数同步使用分页抓取。
 - 所有定时任务使用 `Asia/Shanghai` 时区。
 
-运行数据库位于：
+运行数据库位于 AstrBot 的独立插件数据目录：
 
 ```text
-data/codeforces_helper.db
+data/plugin_data/astrbot_plugin_codeforces_helper/codeforces_helper.db
 ```
 
-数据库保存成员资料、Rating 缓存、去重 AC 记录、同步与播报设置以及后台密码哈希。数据库、实际配置、日志、缓存和用户数据均不纳入 Git。
+数据库保存成员资料、Rating 缓存、去重 AC 记录、同步与播报设置以及后台密码哈希。该目录独立于插件安装目录，从 GitHub 更新、重装或替换插件源码时不会被覆盖。
+
+从 1.0.0 及更早版本首次升级时，插件会在启动阶段将旧路径 `data/plugins/astrbot_plugin_codeforces_helper/data/codeforces_helper.db` 安全复制到新路径：使用 SQLite 在线备份接口、执行完整性检查并原子启用新数据库。迁移完成后旧文件会保留用于回滚；新路径一旦存在，后续启动始终以新数据库为准，不会被旧文件覆盖。更新前仍建议额外备份重要数据。
+
+数据库、实际配置、日志、缓存和用户数据均不纳入 Git。
 
 ## 安全说明
 
