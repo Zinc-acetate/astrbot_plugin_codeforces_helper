@@ -1,6 +1,8 @@
 # Codeforces Helper
 
-Codeforces Helper 是 Zinc-acetate 开发和维护的 AstrBot 插件，提供 Codeforces 刷题记录同步、Rating 缓存、训练排行榜、定时播报与网页管理控制台。
+本插件基于 astrbot_plugin_acm_helper 开发和维护，在原项目基础上进行了Codeforces专项化、功能调整及独立维护。
+
+Codeforces Helper 是 Zinc-acetate 在 astrbot_plugin_acm_helper 基础上开发和维护的 AstrBot 插件，提供 Codeforces 刷题记录同步、Rating 缓存、训练排行榜、定时播报与网页管理控制台。
 
 ## 插件信息
 
