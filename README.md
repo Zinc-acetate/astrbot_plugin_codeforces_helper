@@ -170,15 +170,6 @@ data/codeforces_helper.db
 
 数据库保存成员资料、Rating 缓存、去重 AC 记录、同步与播报设置以及后台密码哈希。数据库、实际配置、日志、缓存和用户数据均不纳入 Git。
 
-## 从旧 ID 升级
-
-`1.0.0` 将插件 ID 从 `astrbot_codeforces_helper` 统一为 `astrbot_plugin_codeforces_helper`。服务器已有安装需要同时迁移：
-
-- 插件目录：`astrbot_codeforces_helper` → `astrbot_plugin_codeforces_helper`
-- 配置文件：`astrbot_codeforces_helper_config.json` → `astrbot_plugin_codeforces_helper_config.json`
-
-完成后重启 AstrBot。插件目录内的 `data/codeforces_helper.db` 应随目录一起保留，否则会表现为全新安装。
-
 ## 安全说明
 
 - 不要公开 CF API Secret、AstrBot 配置文件、数据库或用户资料。
