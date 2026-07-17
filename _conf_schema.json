@@ -1,0 +1,29 @@
+{
+  "command_prefix": {
+    "description": "【重要】插件命令前缀",
+    "type": "string",
+    "hint": "用于触发本插件的命令，默认为 /acm。通常无需修改。",
+    "default": "/acm"
+  },
+  "webui_port": {
+    "description": "【系统】网页仪表盘的端口号",
+    "type": "int",
+    "hint": "修改后需要重启插件的WebUI才能生效",
+    "default": 8088
+  },
+  "admin_qq_id": {
+    "description": "【重要】机器人管理员QQ号",
+    "type": "string",
+    "hint": "用于接收重要错误通知，请务必填写。"
+  },
+  "cf_api_key": {
+    "description": "【CF-可选】API Key",
+    "type": "string",
+    "hint": "用于提高CF的API请求频率限制，没有可不填。"
+  },
+  "cf_api_secret": {
+    "description": "【CF-可选】API Secret",
+    "type": "string",
+    "hint": "与CF API Key配对使用，没有可不填。"
+  }
+}

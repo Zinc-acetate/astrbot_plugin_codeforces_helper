@@ -1,0 +1,8 @@
+aiohttp
+aiosqlite
+apscheduler
+quart
+hypercorn
+aiofiles
+Pillow
+Werkzeug

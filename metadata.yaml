@@ -1,0 +1,5 @@
+name: astrbot_codeforces_helper
+desc: Zinc-acetate 的 Codeforces 训练、Rating 缓存与管理插件。
+version: "1.0"
+author: Zinc-acetate
+repo: "https://github.com/Zinc-acetate/astrbot_codeforces_helper"
