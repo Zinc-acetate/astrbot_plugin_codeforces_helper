@@ -1,7 +1,7 @@
 name: astrbot_plugin_codeforces_helper
 display_name: Codeforces 训练助手
 desc: 面向 QQ 群的 Codeforces 训练助手，支持 AC 记录同步、Rating 缓存、排行榜、定时播报和 Web 管理后台。
-version: 1.0.1
+version: 1.1.0
 author: Zinc-acetate
 repo: https://github.com/Zinc-acetate/astrbot_plugin_codeforces_helper
 astrbot_version: ">=4.0.0,<5.0.0"

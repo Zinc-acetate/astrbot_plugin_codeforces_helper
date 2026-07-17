@@ -89,118 +89,95 @@ class Crawler:
             return False
 
     @staticmethod
-    async def fetch_cf_submissions(session: aiohttp.ClientSession, user_row: aiosqlite.Row, start_timestamp: int, db: aiosqlite.Connection, config: dict) -> int:
-        handle = user_row['cf_handle']; qq_id = user_row['qq_id']
-        api_key = config.get("cf_api_key"); api_secret = config.get("cf_api_secret")
-        method_name = "user.status"; params = {"handle": handle, "from": "1", "count": "100"}
-
-        if api_key and api_secret:
-            params["apiKey"] = api_key; params["time"] = str(int(time.time()))
-            params["apiSig"] = Crawler._generate_cf_api_sig(method_name, params, api_key, api_secret)
-
-        url = f"https://codeforces.com/api/{method_name}?" + '&'.join([f"{k}={v}" for k, v in params.items()])
-
-        added_count = 0
-        try:
-            async with session.get(url, timeout=15) as response:
-                response.raise_for_status(); data = await response.json()
-            if data.get('status') != 'OK':
-                logger.error(f"CF API 请求失败 (用户: {handle}): {data.get('comment')}")
-                return 0
-
-            insert_tasks, processed_in_sync = [], set()
-            for sub in data.get('result', []):
-                if not isinstance(sub, dict) or sub.get('verdict') != 'OK' or 'problem' not in sub: continue
-
-                prob = sub.get('problem')
-                if not isinstance(prob, dict): continue
-
-                if sub.get('creationTimeSeconds', 0) >= start_timestamp:
-                    problem_name, contest_id, problem_index = prob.get('name'), prob.get('contestId'), prob.get('index')
-                    if not problem_name and not (contest_id and problem_index): continue
-
-                    if contest_id and problem_index:
-                        stable_pid = f"cf_{contest_id}{problem_index}"
-                    else:
-                        name_norm = ''.join(filter(str.isalnum, problem_name or '')).lower()
-                        if not name_norm: continue
-                        stable_pid = f"cf_{name_norm}_{prob.get('rating', -1)}"
-
-                    if stable_pid in processed_in_sync: continue
-
-                    async with db.execute("SELECT 1 FROM submissions WHERE user_qq_id = ? AND platform = 'codeforces' AND problem_id = ?", (qq_id, stable_pid)) as c:
-                        if not await c.fetchone():
-                            url_part = f"gym/{contest_id}/problem/{problem_index}" if contest_id and contest_id >= 100000 else f"problemset/problem/{contest_id}/{problem_index}"
-                            problem_url = f"https://codeforces.com/{url_part}" if contest_id and problem_index else ""
-                            insert_tasks.append((qq_id, 'codeforces', stable_pid, problem_name or "Unknown Problem", str(prob.get('rating', -1)), problem_url, sub['creationTimeSeconds']))
-                            processed_in_sync.add(stable_pid)
-                elif sub.get('creationTimeSeconds', 0) < start_timestamp:
-                    break
-
-            if insert_tasks:
-                await db.executemany("INSERT INTO submissions (user_qq_id, platform, problem_id, problem_name, problem_rating, problem_url, submit_time) VALUES (?, ?, ?, ?, ?, ?, ?)", insert_tasks)
-                await db.commit()
-                added_count += len(insert_tasks)
-
-        except Exception as e:
-            logger.error(f"处理 CF 用户 {handle} 时发生严重错误: {e}", exc_info=True)
-
-        return added_count
+    def _submission_identity(prob: dict):
+        problem_name = prob.get("name")
+        contest_id = prob.get("contestId")
+        problem_index = prob.get("index")
+        if contest_id is not None and problem_index:
+            return f"cf_{contest_id}{problem_index}", problem_name or "Unknown Problem", contest_id, problem_index
+        name_norm = "".join(filter(str.isalnum, problem_name or "")).lower()
+        if not name_norm:
+            return None
+        return f"cf_{name_norm}_{prob.get('rating', -1)}", problem_name or "Unknown Problem", None, None
 
     @staticmethod
-    async def fetch_cf_submissions_paginated(session: aiohttp.ClientSession, user_row: aiosqlite.Row, start_timestamp: int, db: aiosqlite.Connection, config: dict) -> int:
-        """深度、分页的CF爬虫，获取指定时间内所有记录。用于/acm sql命令。"""
-        handle = user_row['cf_handle']; qq_id = user_row['qq_id']
-        api_key = config.get("cf_api_key"); api_secret = config.get("cf_api_secret")
+    async def fetch_cf_submissions(session: aiohttp.ClientSession, user_row: aiosqlite.Row,
+                                   start_timestamp: int, db: aiosqlite.Connection,
+                                   config: dict) -> tuple[int, bool]:
+        """分页获取起始时间之后的提交；返回（实际新增数，是否完整成功）。"""
+        handle, qq_id = user_row["cf_handle"], user_row["qq_id"]
+        api_key, api_secret = config.get("cf_api_key"), config.get("cf_api_secret")
         method_name = "user.status"
+        from_index = 1
+        candidates = []
+        processed = set()
 
-        from_index, stop_fetching = 1, False
-        all_insert_tasks = []; processed_in_sync = set()
-        while not stop_fetching:
+        while True:
             params = {"handle": handle, "from": str(from_index), "count": "100"}
             if api_key and api_secret:
-                params["apiKey"] = api_key; params["time"] = str(int(time.time()))
+                params["apiKey"] = api_key
+                params["time"] = str(int(time.time()))
                 params["apiSig"] = Crawler._generate_cf_api_sig(method_name, params, api_key, api_secret)
-
-            url = f"https://codeforces.com/api/{method_name}?" + '&'.join([f"{k}={v}" for k, v in params.items()])
-
+            from urllib.parse import urlencode
+            url = f"https://codeforces.com/api/{method_name}?{urlencode(params)}"
             try:
                 async with session.get(url, timeout=30) as response:
-                    response.raise_for_status(); data = await response.json()
-                if data.get('status') != 'OK': logger.error(f"CF API 请求失败 (用户: {handle}, 页码: {from_index // 100 + 1}): {data.get('comment')}"); break
-
-                subs = data.get('result', [])
-                if not subs: break
-
-                page_insert_tasks = []
-                for sub in subs:
-                    if not isinstance(sub, dict) or sub.get('verdict') != 'OK' or 'problem' not in sub: continue
-                    prob = sub.get('problem');
-                    if not isinstance(prob, dict): continue
-                    submission_time = sub.get('creationTimeSeconds', 0)
-                    if submission_time >= start_timestamp:
-                        problem_name, contest_id, problem_index = prob.get('name'), prob.get('contestId'), prob.get('index')
-                        if not all([problem_name, contest_id, problem_index]): continue
-                        stable_pid = f"cf_{contest_id}{problem_index}"
-                        if stable_pid in processed_in_sync: continue
-                        async with db.execute("SELECT 1 FROM submissions WHERE user_qq_id = ? AND platform = 'codeforces' AND problem_id = ?", (qq_id, stable_pid)) as c:
-                            if not await c.fetchone():
-                                url_part = f"gym/{contest_id}/problem/{problem_index}" if contest_id >= 100000 else f"problemset/problem/{contest_id}/{problem_index}"
-                                problem_url = f"https://codeforces.com/{url_part}"
-                                page_insert_tasks.append((qq_id, 'codeforces', stable_pid, problem_name, str(prob.get('rating', -1)), problem_url, submission_time))
-                                processed_in_sync.add(stable_pid)
-                    else:
-                        stop_fetching = True
-
-                if page_insert_tasks: all_insert_tasks.extend(page_insert_tasks)
-                from_index += 100
-                await asyncio.sleep(0.5)
+                    response.raise_for_status()
+                    data = await response.json()
             except Exception as e:
-                logger.error(f"处理 CF 用户 {handle} (深度同步) 时发生错误: {e}", exc_info=False)
-                break
+                logger.error(f"获取 CF 用户 {handle} 提交失败（from={from_index}）: {e}")
+                return 0, False
+            if data.get("status") != "OK":
+                logger.error(f"CF API 请求失败（用户: {handle}）: {data.get('comment')}")
+                return 0, False
 
-        if all_insert_tasks:
-            await db.executemany("INSERT OR IGNORE INTO submissions (user_qq_id, platform, problem_id, problem_name, problem_rating, problem_url, submit_time) VALUES (?, ?, ?, ?, ?, ?, ?)", all_insert_tasks)
+            submissions = data.get("result", [])
+            if not submissions:
+                break
+            reached_start = False
+            for sub in submissions:
+                if not isinstance(sub, dict):
+                    continue
+                submission_time = int(sub.get("creationTimeSeconds", 0) or 0)
+                if submission_time < start_timestamp:
+                    reached_start = True
+                    continue
+                if sub.get("verdict") != "OK" or not isinstance(sub.get("problem"), dict):
+                    continue
+                identity = Crawler._submission_identity(sub["problem"])
+                if not identity:
+                    continue
+                stable_pid, problem_name, contest_id, problem_index = identity
+                if stable_pid in processed:
+                    continue
+                processed.add(stable_pid)
+                if contest_id is not None and problem_index:
+                    url_part = (f"gym/{contest_id}/problem/{problem_index}" if contest_id >= 100000
+                                else f"problemset/problem/{contest_id}/{problem_index}")
+                    problem_url = f"https://codeforces.com/{url_part}"
+                else:
+                    problem_url = ""
+                candidates.append((qq_id, "codeforces", stable_pid, problem_name,
+                                   str(sub["problem"].get("rating", -1)), problem_url, submission_time))
+            if reached_start or len(submissions) < 100:
+                break
+            from_index += 100
+            await asyncio.sleep(0.5)
+
+        before = db.total_changes
+        if candidates:
+            await db.executemany(
+                """INSERT OR IGNORE INTO submissions
+                   (user_qq_id, platform, problem_id, problem_name, problem_rating, problem_url, submit_time)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                candidates,
+            )
             await db.commit()
-            return len(all_insert_tasks)
-        return 0
+        return db.total_changes - before, True
+
+    @staticmethod
+    async def fetch_cf_submissions_paginated(session: aiohttp.ClientSession, user_row: aiosqlite.Row,
+                                             start_timestamp: int, db: aiosqlite.Connection,
+                                             config: dict) -> tuple[int, bool]:
+        """兼容旧调用名；当前普通与深度同步均使用安全分页。"""
+        return await Crawler.fetch_cf_submissions(session, user_row, start_timestamp, db, config)

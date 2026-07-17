@@ -7,6 +7,7 @@ from quart import Blueprint, current_app, jsonify, request, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from ..core.crawler import Crawler
+from ..core.sync_lock import acquire_sync_lock, SyncAlreadyRunning
 from astrbot.api import logger
 
 api = Blueprint("api", __name__)
@@ -43,39 +44,53 @@ async def write_setting(db, key, value):
 
 
 async def sync_users(qq_ids=None, days=None):
-    """WebUI 手动同步入口。与定时任务共用爬虫，并批量刷新 CF 分数缓存。"""
+    """默认补全近30天；补全后仅增量更新，且仅成功时推进游标。"""
     async with manual_sync_lock:
         db = await get_db()
         try:
-            params = []
-            sql = "SELECT * FROM users"
-            if qq_ids:
-                placeholders = ",".join("?" for _ in qq_ids)
-                sql += f" WHERE qq_id IN ({placeholders})"
-                params.extend(qq_ids)
-            async with db.execute(sql, tuple(params)) as cursor:
-                users = await cursor.fetchall()
-            if not users:
-                return {"users": 0, "submissions": 0, "profiles": 0}
+            with acquire_sync_lock(current_app.config["DB_PATH"]):
+                params = []
+                sql = "SELECT * FROM users"
+                if qq_ids:
+                    placeholders = ",".join("?" for _ in qq_ids)
+                    sql += f" WHERE qq_id IN ({placeholders})"
+                    params.extend(qq_ids)
+                async with db.execute(sql, tuple(params)) as cursor:
+                    users = await cursor.fetchall()
+                if not users:
+                    return {"users": 0, "submissions": 0, "profiles": 0, "failed": 0}
 
-            config = current_app.config.get("PLUGIN_CONFIG", {})
-            now = int(time.time())
-            total_added = 0
-            async with aiohttp.ClientSession() as http:
-                for user in users:
-                    if days is None:
-                        start = user["last_sync_timestamp"] or now - 7 * 86400
-                    else:
-                        start = now - days * 86400
-                    if user["cf_handle"]:
-                        if days is None:
-                            total_added += await Crawler.fetch_cf_submissions(http, user, start, db, config)
+                config = current_app.config.get("PLUGIN_CONFIG", {})
+                now, total_added, failed = int(time.time()), 0, 0
+                async with aiohttp.ClientSession() as http:
+                    for user in users:
+                        if not user["cf_handle"]:
+                            continue
+                        history_days = int(user["history_sync_days"] or 0)
+                        if days is not None:
+                            requested_days = days
+                            start = now - days * 86400
+                        elif history_days < 30:
+                            requested_days = 30
+                            start = now - 30 * 86400
                         else:
-                            total_added += await Crawler.fetch_cf_submissions_paginated(http, user, start, db, config)
-                    await db.execute("UPDATE users SET last_sync_timestamp=? WHERE qq_id=?", (now, user["qq_id"]))
-                await db.commit()
-                profiles = await Crawler.fetch_cf_profiles(http, users, db, config)
-            return {"users": len(users), "submissions": total_added, "profiles": profiles}
+                            requested_days = history_days
+                            start = int(user["last_sync_timestamp"] or now - 30 * 86400)
+                        added, complete = await Crawler.fetch_cf_submissions(
+                            http, user, start, db, config
+                        )
+                        total_added += added
+                        if complete:
+                            await db.execute(
+                                "UPDATE users SET last_sync_timestamp=?, history_sync_days=? WHERE qq_id=?",
+                                (now, max(history_days, requested_days), user["qq_id"]),
+                            )
+                        else:
+                            failed += 1
+                    await db.commit()
+                    profiles = await Crawler.fetch_cf_profiles(http, users, db, config)
+                return {"users": len(users), "submissions": total_added,
+                        "profiles": profiles, "failed": failed}
         finally:
             await db.close()
 
@@ -240,10 +255,22 @@ async def admin_users():
                 values.append((qq_id, name, str(item.get("cf_handle", "")).strip() or None,
                                str(item.get("status", "")).strip() or None,
                                str(item.get("school", "")).strip() or None))
-            await db.executemany(
-                """INSERT INTO users (qq_id,name,cf_handle,status,school,last_sync_timestamp)
-                   VALUES (?,?,?,?,?,0) ON CONFLICT(qq_id) DO UPDATE SET name=excluded.name,
-                   cf_handle=excluded.cf_handle, status=excluded.status, school=excluded.school""", values)
+            for value in values:
+                qq_id, name, cf_handle, status, school = value
+                async with db.execute("SELECT cf_handle FROM users WHERE qq_id=?", (qq_id,)) as cursor:
+                    existing = await cursor.fetchone()
+                handle_changed = bool(existing and (existing["cf_handle"] or "").lower() != (cf_handle or "").lower())
+                if handle_changed:
+                    await db.execute("DELETE FROM submissions WHERE user_qq_id=?", (qq_id,))
+                await db.execute(
+                    """INSERT INTO users (qq_id,name,cf_handle,status,school,last_sync_timestamp,history_sync_days)
+                       VALUES (?,?,?,?,?,0,0) ON CONFLICT(qq_id) DO UPDATE SET
+                       name=excluded.name, cf_handle=excluded.cf_handle, status=excluded.status,
+                       school=excluded.school,
+                       last_sync_timestamp=CASE WHEN LOWER(COALESCE(users.cf_handle,'')) != LOWER(COALESCE(excluded.cf_handle,'')) THEN 0 ELSE users.last_sync_timestamp END,
+                       history_sync_days=CASE WHEN LOWER(COALESCE(users.cf_handle,'')) != LOWER(COALESCE(excluded.cf_handle,'')) THEN 0 ELSE users.history_sync_days END""",
+                    value,
+                )
             await db.commit()
             return jsonify({"success": True, "message": f"已新增或更新 {len(values)} 位成员"})
         qq_ids = [str(x).strip() for x in (data.get("qq_ids") or []) if str(x).strip()]
@@ -278,6 +305,8 @@ async def admin_sync():
     try:
         result = await sync_users(qq_ids=qq_ids, days=days)
         return jsonify({"success": True, "message": "数据更新完成", "result": result})
+    except SyncAlreadyRunning as e:
+        return jsonify({"success": False, "message": str(e)}), 409
     except Exception as e:
         logger.error(f"手动更新失败: {e}", exc_info=True)
         return jsonify({"success": False, "message": f"手动更新失败：{e}"}), 500

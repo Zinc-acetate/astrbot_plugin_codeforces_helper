@@ -30,8 +30,9 @@ except ImportError:
 
 from .webui import run_server
 from .core.crawler import Crawler
+from .core.sync_lock import acquire_sync_lock, SyncAlreadyRunning
 
-@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.0.1")
+@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.1.0")
 class CodeforcesHelperPlugin(Star):
     db: aiosqlite.Connection
     db_path: Path
@@ -44,7 +45,7 @@ class CodeforcesHelperPlugin(Star):
         self.FONT_PATH = Path(__file__).parent / "resources" / "SourceHanSansSC-Bold.otf"
 
     async def initialize(self):
-        logger.info("Codeforces Helper v1.0.1 开始初始化...")
+        logger.info("Codeforces Helper v1.1.0 开始初始化...")
         await self.connect_db()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         settings = await self._get_all_settings()
@@ -117,7 +118,8 @@ class CodeforcesHelperPlugin(Star):
             columns = {row[1] for row in await cursor.fetchall()}
         migrations = {
             'cf_rating': 'INTEGER', 'cf_rank': 'TEXT', 'cf_max_rating': 'INTEGER',
-            'cf_max_rank': 'TEXT', 'cf_rating_updated_at': 'INTEGER DEFAULT 0'
+            'cf_max_rank': 'TEXT', 'cf_rating_updated_at': 'INTEGER DEFAULT 0',
+            'history_sync_days': 'INTEGER DEFAULT 0'
         }
         for column, sql_type in migrations.items():
             if column not in columns:
@@ -204,32 +206,63 @@ class CodeforcesHelperPlugin(Star):
             parts.append(f"\n👤 {solve['user_name']} 在 {time_str} 通过了\n💻 {solve['platform']} - {solve['problem_name']}\n📈 难度: {solve['problem_rating'] or 'N/A'}\n🔗 {solve['problem_url']}")
         return "\n".join(parts)
 
-    async def sync_single_user(self, qq_id: str, refresh_cf_profile: bool = True):
-        async with self.db.execute("SELECT * FROM users WHERE qq_id = ?", (qq_id,)) as cursor: user = await cursor.fetchone()
-        if not user: return
-        current_sync_time = int(time.time()); seven_days_ago = current_sync_time - (7 * 24 * 60 * 60)
-        last_sync = user['last_sync_timestamp'] or 0; start_timestamp = seven_days_ago if last_sync == 0 else last_sync
-        sync_type = "7日全量" if last_sync == 0 else "增量"; logger.info(f"  -> 为用户 {user['name']} 执行 [{sync_type}] 同步...")
-        user_new_count = 0
+    async def sync_single_user(self, qq_id: str, refresh_cf_profile: bool = True, days: int = None):
+        async with self.db.execute("SELECT * FROM users WHERE qq_id = ?", (qq_id,)) as cursor:
+            user = await cursor.fetchone()
+        if not user or not user["cf_handle"]:
+            return 0, False
+        now = int(time.time())
+        history_days = int(user["history_sync_days"] or 0)
+        if days is not None:
+            requested_days = max(1, min(int(days), 3650))
+            start_timestamp = now - requested_days * 86400
+            sync_type = f"{requested_days}天深度"
+        elif history_days < 30:
+            requested_days = 30
+            start_timestamp = now - 30 * 86400
+            sync_type = "30日补全"
+        else:
+            requested_days = history_days
+            start_timestamp = int(user["last_sync_timestamp"] or now - 30 * 86400)
+            sync_type = "增量"
+        logger.info(f"  -> 为用户 {user['name']} 执行 [{sync_type}] 同步...")
         async with aiohttp.ClientSession() as session:
-            if user['cf_handle']:
-                user_new_count += await Crawler.fetch_cf_submissions(session, user, start_timestamp, self.db, self.config)
-                if refresh_cf_profile:
-                    await Crawler.fetch_cf_profile(session, user, self.db, self.config)
-        if user_new_count > 0: logger.info(f"    为用户 {user['name']} 同步了 {user_new_count} 条新记录。")
-        await self.db.execute("UPDATE users SET last_sync_timestamp = ? WHERE qq_id = ?", (current_sync_time, user['qq_id'])); await self.db.commit()
+            added, complete = await Crawler.fetch_cf_submissions(
+                session, user, start_timestamp, self.db, self.config
+            )
+            if refresh_cf_profile:
+                await Crawler.fetch_cf_profile(session, user, self.db, self.config)
+        if complete:
+            new_history_days = max(history_days, requested_days)
+            await self.db.execute(
+                "UPDATE users SET last_sync_timestamp=?, history_sync_days=? WHERE qq_id=?",
+                (now, new_history_days, user["qq_id"]),
+            )
+            await self.db.commit()
+            if added:
+                logger.info(f"    为用户 {user['name']} 同步了 {added} 条新记录。")
+        else:
+            logger.warning(f"用户 {user['name']} 同步未完整完成，不推进同步时间。")
+        return added, complete
 
     async def sync_all_users_data(self):
         logger.info(f"[智能同步] 开始执行 {time.strftime('%H:%M')} 周期的同步任务...")
-        async with self.db.execute("SELECT qq_id FROM users WHERE cf_handle IS NOT NULL AND TRIM(cf_handle) != ''") as cursor: user_rows = await cursor.fetchall()
-        if not user_rows: return
-        for user_row in user_rows: await self.sync_single_user(user_row['qq_id'], refresh_cf_profile=False)
-        async with self.db.execute("SELECT * FROM users WHERE cf_handle IS NOT NULL AND TRIM(cf_handle) != ''") as cursor:
-            cf_users = await cursor.fetchall()
-        if cf_users:
-            async with aiohttp.ClientSession() as session:
-                refreshed = await Crawler.fetch_cf_profiles(session, cf_users, self.db, self.config)
-            logger.info(f"[智能同步] 批量刷新了 {refreshed} 位用户的 CF 分数资料。")
+        try:
+            with acquire_sync_lock(self.db_path):
+                async with self.db.execute("SELECT qq_id FROM users WHERE cf_handle IS NOT NULL AND TRIM(cf_handle) != ''") as cursor:
+                    user_rows = await cursor.fetchall()
+                if not user_rows:
+                    return
+                for user_row in user_rows:
+                    await self.sync_single_user(user_row["qq_id"], refresh_cf_profile=False)
+                async with self.db.execute("SELECT * FROM users WHERE cf_handle IS NOT NULL AND TRIM(cf_handle) != ''") as cursor:
+                    cf_users = await cursor.fetchall()
+                async with aiohttp.ClientSession() as session:
+                    refreshed = await Crawler.fetch_cf_profiles(session, cf_users, self.db, self.config)
+                logger.info(f"[智能同步] 批量刷新了 {refreshed} 位用户的 CF 分数资料。")
+        except SyncAlreadyRunning:
+            logger.info("[智能同步] 已有手动或自动更新任务，跳过本轮。")
+            return
         logger.info("[智能同步] 本次周期任务完成。")
 
     async def report_hourly_solves(self):
@@ -247,16 +280,7 @@ class CodeforcesHelperPlugin(Star):
         except Exception as e: logger.error(f"发送小时榜通知失败: {e}", exc_info=True)
 
     async def sync_single_user_for_days(self, qq_id: str, days: int):
-        async with self.db.execute("SELECT * FROM users WHERE qq_id = ?", (qq_id,)) as cursor: user = await cursor.fetchone()
-        if not user: return
-        start_timestamp = int(time.time()) - (days * 24 * 60 * 60)
-        logger.info(f"  -> 为用户 {user['name']} 执行 [{days}天深度] 同步...")
-        user_new_count = 0
-        async with aiohttp.ClientSession() as session:
-            if user['cf_handle']:
-                user_new_count += await Crawler.fetch_cf_submissions_paginated(session, user, start_timestamp, self.db, self.config)
-                await Crawler.fetch_cf_profile(session, user, self.db, self.config)
-        if user_new_count > 0: logger.info(f"    为用户 {user['name']} 同步了 {user_new_count} 条新记录。")
+        return await self.sync_single_user(qq_id, refresh_cf_profile=True, days=days)
 
     async def _generate_rank_image(self, title: str, users_data: list) -> bytes | str:
         if not all([PILImage, ImageDraw, ImageFont]): return "❌ 无法生成图片：Pillow 库未正确安装。"
@@ -463,7 +487,14 @@ class CodeforcesHelperPlugin(Star):
             return
         qq_id = cmd_parts[2].strip()
         days = max(1, min(int(cmd_parts[3]), 3650))
-        yield event.plain_result(f"收到指令，正在为用户 {qq_id} 执行一次同步任务..."); await self.sync_single_user_for_days(qq_id,days); yield event.plain_result(f"用户 {qq_id} 的同步任务已在后台执行完成！")
+        yield event.plain_result(f"收到指令，正在为用户 {qq_id} 执行一次同步任务...")
+        try:
+            with acquire_sync_lock(self.db_path):
+                _, complete = await self.sync_single_user_for_days(qq_id, days)
+        except SyncAlreadyRunning as e:
+            yield event.plain_result(str(e))
+            return
+        yield event.plain_result(f"用户 {qq_id} 的同步任务{'已完成' if complete else '未完整完成，请查看日志后重试'}！")
 
     @acm_manager.command("del_user")
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -567,11 +598,20 @@ class CodeforcesHelperPlugin(Star):
     async def cmd_sql_sync(self, event: AstrMessageEvent):
         cmd_parts = event.message_str.strip().split()
         if len(cmd_parts) < 3 or not cmd_parts[2].isdigit(): yield event.plain_result("⚠️ 格式错误。\n用法: /acm sql <天数>"); return
-        days = max(0,min(int(cmd_parts[2]), 114514))
+        days = max(1, min(int(cmd_parts[2]), 3650))
         yield event.plain_result(f"收到指令！正在为所有用户执行【{days}天深度同步】，请耐心等待...")
-        async with self.db.execute("SELECT qq_id FROM users") as cursor: all_users = await cursor.fetchall()
-        for user_row in all_users: await self.sync_single_user_for_days(user_row['qq_id'], days)
-        yield event.plain_result(f"✅ 同步完成！正在生成榜单...")
+        try:
+            with acquire_sync_lock(self.db_path):
+                async with self.db.execute("SELECT qq_id FROM users") as cursor:
+                    all_users = await cursor.fetchall()
+                failed = 0
+                for user_row in all_users:
+                    _, complete = await self.sync_single_user_for_days(user_row['qq_id'], days)
+                    failed += int(not complete)
+        except SyncAlreadyRunning as e:
+            yield event.plain_result(str(e))
+            return
+        yield event.plain_result(f"✅ 同步结束，失败 {failed} 位。正在生成榜单...")
         title = f"深度同步 · 近 {days} 天过题排行榜"
         users_data = await self._query_rank_data(days=days, limit=50)
         if not users_data: yield event.plain_result(f"📊 {title}\n\n该条件下暂无过题记录。"); return
