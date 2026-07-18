@@ -6,9 +6,10 @@ Codeforces 训练、Rating 缓存、排行榜、定时播报与 Web 管理插件
 
 - 插件 ID：`astrbot_plugin_codeforces_helper`
 - 显示名称：`Codeforces 训练助手`
-- 当前版本：`1.0.0`
+- 当前版本：`1.1.1`
 - 维护者：`Zinc-acetate`
 - 命令组：`/acm`
+- 功能范围：仅面向 Codeforces；`/acm` 作为历史兼容命令前缀保留，不代表插件仍支持其他 OJ。
 - 仓库：<https://github.com/Zinc-acetate/astrbot_plugin_codeforces_helper>
 - 许可证：GNU Affero General Public License v3.0（AGPL-3.0）
 

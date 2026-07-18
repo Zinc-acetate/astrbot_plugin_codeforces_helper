@@ -32,7 +32,7 @@ from .webui import run_server
 from .core.crawler import Crawler
 from .core.sync_lock import acquire_sync_lock, SyncAlreadyRunning
 
-@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.1.0")
+@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.1.1")
 class CodeforcesHelperPlugin(Star):
     db: aiosqlite.Connection
     db_path: Path
@@ -45,7 +45,7 @@ class CodeforcesHelperPlugin(Star):
         self.FONT_PATH = Path(__file__).parent / "resources" / "SourceHanSansSC-Bold.otf"
 
     async def initialize(self):
-        logger.info("Codeforces Helper v1.1.0 开始初始化...")
+        logger.info("Codeforces Helper v1.1.1 开始初始化...")
         await self.connect_db()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         settings = await self._get_all_settings()
@@ -443,10 +443,10 @@ class CodeforcesHelperPlugin(Star):
         cron_hour = await self.get_setting('report_cron_hour'); cron_minute = await self.get_setting('report_cron_minute')
         hourly_limit = await self.get_setting('hourly_report_limit', '10')
         sync_interval = await self.get_setting('sync_interval_minutes', '60')
-        status_text = (f"📊 ACM 助手插件当前状态:\n--------------------------\n"
+        status_text = (f"📊 Codeforces 训练助手当前状态:\n--------------------------\n"
                        f"  - 定时播报: {'✅ 开启' if is_enabled else '❌ 关闭'}\n"
-                       f"  - 数据与CF分数更新间隔: {sync_interval} 分钟\n"
-                       f"  - 小时榜上限: {hourly_limit} 题\n"
+                       f"  - AC 记录与 CF Rating 更新间隔: {sync_interval} 分钟\n"
+                       f"  - 近期过题播报上限: {hourly_limit} 题\n"
                        f"  - 目标群聊: {group_id}\n"
                        f"  - CRON 表达式: 小时={cron_hour}, 分钟={cron_minute}")
         yield event.plain_result(status_text)
