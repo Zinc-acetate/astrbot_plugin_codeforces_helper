@@ -32,7 +32,7 @@ from .webui import run_server
 from .core.crawler import Crawler
 from .core.sync_lock import acquire_sync_lock, SyncAlreadyRunning
 
-@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.2.0")
+@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.2.1")
 class CodeforcesHelperPlugin(Star):
     db: aiosqlite.Connection
     db_path: Path
@@ -45,7 +45,7 @@ class CodeforcesHelperPlugin(Star):
         self.FONT_PATH = Path(__file__).parent / "resources" / "SourceHanSansSC-Bold.otf"
 
     async def initialize(self):
-        logger.info("Codeforces Helper v1.2.0 开始初始化...")
+        logger.info("Codeforces Helper v1.2.1 开始初始化...")
         await self.connect_db()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         settings = await self._get_all_settings()
@@ -338,6 +338,71 @@ class CodeforcesHelperPlugin(Star):
         return buffer.getvalue()
 
     @staticmethod
+    def _cf_rating_hex(rating: int) -> str:
+        """返回 Codeforces Rating 对应的官方风格颜色。"""
+        if not isinstance(rating, int): return '#808080'
+        if rating < 1200: return '#808080'
+        if rating < 1400: return '#008000'
+        if rating < 1600: return '#03A89E'
+        if rating < 1900: return '#0000FF'
+        if rating < 2100: return '#AA00AA'
+        if rating < 2400: return '#FF8C00'
+        return '#FF0000'
+
+    async def _generate_rating_rank_image(self, title: str, users: list) -> bytes | str:
+        if not all([PILImage, ImageDraw, ImageFont]):
+            return "❌ 无法生成图片：Pillow 库未正确安装。"
+        if not self.FONT_PATH.exists():
+            return f"❌ 无法生成图片：字体文件丢失 ({self.FONT_PATH})。"
+
+        width = 760
+        title_height, header_height, row_height, footer_height = 82, 50, 52, 24
+        height = title_height + header_height + len(users) * row_height + footer_height
+        image = PILImage.new('RGB', (width, height), '#FFFFFF')
+        draw = ImageDraw.Draw(image)
+        try:
+            font_title = ImageFont.truetype(str(self.FONT_PATH), 25)
+            font_header = ImageFont.truetype(str(self.FONT_PATH), 17)
+            font_body = ImageFont.truetype(str(self.FONT_PATH), 18)
+        except IOError:
+            return f"❌ 无法加载字体文件 {self.FONT_PATH}。"
+
+        draw.rectangle((0, 0, width, title_height), fill='#343A40')
+        draw.text((width / 2, title_height / 2), title, font=font_title,
+                  fill='#FFFFFF', anchor='mm')
+        draw.rectangle((0, title_height, width, title_height + header_height), fill='#246BCE')
+        columns = {'排名': 72, 'CF ID': 330, 'Rating': 650}
+        for label, x in columns.items():
+            draw.text((x, title_height + header_height / 2), label, font=font_header,
+                      fill='#FFFFFF', anchor='mm')
+
+        for index, user in enumerate(users, 1):
+            top = title_height + header_height + (index - 1) * row_height
+            draw.rectangle((0, top, width, top + row_height),
+                           fill='#F5F7FA' if index % 2 == 0 else '#FFFFFF')
+            center_y = top + row_height / 2
+            rating = int(user['rating'])
+            color = self._cf_rating_hex(rating)
+            handle = str(user['cf_handle'])
+            max_width = 390
+            if font_body.getlength(handle) > max_width:
+                while handle and font_body.getlength(handle + '..') > max_width:
+                    handle = handle[:-1]
+                handle += '..'
+            draw.text((columns['排名'], center_y), str(index), font=font_body,
+                      fill='#343A40', anchor='mm')
+            draw.text((columns['CF ID'], center_y), handle, font=font_body,
+                      fill=color, anchor='mm')
+            draw.text((columns['Rating'], center_y), str(rating), font=font_body,
+                      fill=color, anchor='mm')
+            draw.line((0, top + row_height, width, top + row_height), fill='#E4E8ED', width=1)
+
+        from io import BytesIO
+        buffer = BytesIO()
+        image.save(buffer, format='PNG', optimize=True)
+        return buffer.getvalue()
+
+    @staticmethod
     def _pd_cf_color(rating):
         if not isinstance(rating, int): rating = 0
         if rating < 1200: return "灰名"
@@ -509,15 +574,15 @@ class CodeforcesHelperPlugin(Star):
             yield event.plain_result(f"{title}暂无已定级成员。")
             return
 
-        lines = [f"【{title} Top {len(users)}】"]
-        for index, user in enumerate(users, 1):
-            rating = user['rating']
-            lines.append(
-                f"{index}. {user['name']} / {user['cf_handle']}："
-                f"{rating}（{self._pd_cf_color(rating)}）"
-            )
-        lines.append("数据来自本地缓存，由插件定时更新。")
-        yield event.plain_result("\n".join(lines))
+        try:
+            image_bytes = await self._generate_rating_rank_image(title, users)
+            if isinstance(image_bytes, str):
+                yield event.plain_result(image_bytes)
+            else:
+                yield event.chain_result([Image.fromBytes(image_bytes)])
+        except Exception as e:
+            logger.error(f"生成 Codeforces Rating 排行榜失败: {e}", exc_info=True)
+            yield event.plain_result("❌ Rating 排行榜图片生成失败，请稍后重试。")
 
     @acm_manager.command("sync_user")
     @filter.permission_type(filter.PermissionType.ADMIN)
