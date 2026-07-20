@@ -32,7 +32,7 @@ from .webui import run_server
 from .core.crawler import Crawler
 from .core.sync_lock import acquire_sync_lock, SyncAlreadyRunning
 
-@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.1.2")
+@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.2.0")
 class CodeforcesHelperPlugin(Star):
     db: aiosqlite.Connection
     db_path: Path
@@ -45,7 +45,7 @@ class CodeforcesHelperPlugin(Star):
         self.FONT_PATH = Path(__file__).parent / "resources" / "SourceHanSansSC-Bold.otf"
 
     async def initialize(self):
-        logger.info("Codeforces Helper v1.1.2 开始初始化...")
+        logger.info("Codeforces Helper v1.2.0 开始初始化...")
         await self.connect_db()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         settings = await self._get_all_settings()
@@ -477,6 +477,47 @@ class CodeforcesHelperPlugin(Star):
             f"最高：{maximum}（{user['cf_max_rank'] or 'unrated'}）\n"
             f"更新时间：{updated}"
         )
+
+    @acm_manager.command("rating榜")
+    async def cmd_rating_rank(self, event: AstrMessageEvent):
+        """显示成员当前或历史最高 Codeforces Rating 排行榜。"""
+        cmd_parts = event.message_str.strip().split()
+        mode = cmd_parts[2].lower() if len(cmd_parts) >= 3 else "当前"
+        current_aliases = {"当前", "current", "now"}
+        max_aliases = {"历史", "最高", "max", "history", "historical"}
+        if mode in current_aliases:
+            rating_column, rank_column = "cf_rating", "cf_rank"
+            title = "Codeforces 当前 Rating 排行榜"
+        elif mode in max_aliases:
+            rating_column, rank_column = "cf_max_rating", "cf_max_rank"
+            title = "Codeforces 历史最高 Rating 排行榜"
+        else:
+            yield event.plain_result(
+                "参数错误。\n当前榜：/acm rating榜\n历史榜：/acm rating榜 历史"
+            )
+            return
+
+        query = f"""SELECT name, cf_handle, {rating_column} AS rating, {rank_column} AS cf_rank
+                    FROM users
+                    WHERE cf_handle IS NOT NULL AND TRIM(cf_handle) != ''
+                      AND {rating_column} IS NOT NULL
+                    ORDER BY {rating_column} DESC, name ASC
+                    LIMIT 20"""
+        async with self.db.execute(query) as cursor:
+            users = await cursor.fetchall()
+        if not users:
+            yield event.plain_result(f"{title}暂无已定级成员。")
+            return
+
+        lines = [f"【{title} Top {len(users)}】"]
+        for index, user in enumerate(users, 1):
+            rating = user['rating']
+            lines.append(
+                f"{index}. {user['name']} / {user['cf_handle']}："
+                f"{rating}（{self._pd_cf_color(rating)}）"
+            )
+        lines.append("数据来自本地缓存，由插件定时更新。")
+        yield event.plain_result("\n".join(lines))
 
     @acm_manager.command("sync_user")
     @filter.permission_type(filter.PermissionType.ADMIN)

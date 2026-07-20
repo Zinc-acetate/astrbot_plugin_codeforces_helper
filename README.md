@@ -6,7 +6,7 @@ Codeforces 训练、Rating 缓存、排行榜、定时播报与 Web 管理插件
 
 - 插件 ID：`astrbot_plugin_codeforces_helper`
 - 显示名称：`Codeforces 训练助手`
-- 当前版本：`1.1.2`
+- 当前版本：`1.2.0`
 - 维护者：`Zinc-acetate`
 - 命令组：`/acm`
 - 功能范围：仅面向 Codeforces；`/acm` 作为历史兼容命令前缀保留，不代表插件仍支持其他 OJ。
@@ -133,6 +133,7 @@ QQ 号与姓名必填，其余字段可留空。例如：
 | `/acm hourly [小时数]` | 查询近期过题 |
 | `/acm contest` | 查询近期 Codeforces 比赛 |
 | `/acm rating <Handle>` | 查询本地 Rating 缓存 |
+| `/acm rating榜 [当前\|历史]` | 显示当前或历史最高 Rating 排行榜 |
 | `/acm 查询 <QQ号>` | 查看成员最近 20 条过题 |
 | `/acm 过题 <身份> [天数]` | 生成指定身份图片榜 |
 | `/acm past <天数>` | 生成指定天数图片榜 |
