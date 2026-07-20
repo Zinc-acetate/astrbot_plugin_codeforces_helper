@@ -32,7 +32,7 @@ from .webui import run_server
 from .core.crawler import Crawler
 from .core.sync_lock import acquire_sync_lock, SyncAlreadyRunning
 
-@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.1.1")
+@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.1.2")
 class CodeforcesHelperPlugin(Star):
     db: aiosqlite.Connection
     db_path: Path
@@ -45,7 +45,7 @@ class CodeforcesHelperPlugin(Star):
         self.FONT_PATH = Path(__file__).parent / "resources" / "SourceHanSansSC-Bold.otf"
 
     async def initialize(self):
-        logger.info("Codeforces Helper v1.1.1 开始初始化...")
+        logger.info("Codeforces Helper v1.1.2 开始初始化...")
         await self.connect_db()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         settings = await self._get_all_settings()
@@ -622,14 +622,28 @@ class CodeforcesHelperPlugin(Star):
     @acm_manager.command("past")
     async def cmd_past_rank(self, event: AstrMessageEvent):
         cmd_parts = event.message_str.strip().split()
-        if len(cmd_parts) < 3 or not cmd_parts[2].isdigit(): yield event.plain_result("⚠️ 格式错误。\n用法: /acm past <天数>"); return
+        if len(cmd_parts) < 3 or not cmd_parts[2].isdigit():
+            yield event.plain_result("⚠️ 格式错误。\n用法: /acm past <天数>")
+            return
         days = int(cmd_parts[2])
+        if not 1 <= days <= 3650:
+            yield event.plain_result("⚠️ 天数必须在 1 到 3650 之间；查看全部本地记录请使用 /acm 总榜。")
+            return
         title = f"数据库 · 近 {days} 天过题排行榜"
-        users_data = await self._query_rank_data(days=days, limit=50)
-        if not users_data: yield event.plain_result(f"📊 {title}\n\n该条件下暂无过题记录。"); return
-        image_bytes = await self._generate_rank_image(title, users_data)
-        if isinstance(image_bytes, str): yield event.plain_result(image_bytes)
-        else: yield event.chain_result([Image.fromBytes(image_bytes)])
+        logger.info(f"收到近 {days} 天 Codeforces 榜单查询，发起人: {event.get_sender_id()}")
+        try:
+            users_data = await self._query_rank_data(days=days, limit=50)
+            if not users_data:
+                yield event.plain_result(f"📊 {title}\n\n该条件下暂无过题记录。")
+                return
+            image_bytes = await self._generate_rank_image(title, users_data)
+            if isinstance(image_bytes, str):
+                yield event.plain_result(image_bytes)
+            else:
+                yield event.chain_result([Image.fromBytes(image_bytes)])
+        except Exception as e:
+            logger.error(f"生成近 {days} 天 Codeforces 榜单失败: {e}", exc_info=True)
+            yield event.plain_result("❌ 榜单生成或发送失败，请稍后重试并联系管理员查看日志。")
 
     @acm_manager.command("总榜")
     async def cmd_total_rank(self, event: AstrMessageEvent):
