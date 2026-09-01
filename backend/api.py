@@ -255,32 +255,37 @@ async def admin_users():
                 values.append((qq_id, name, str(item.get("cf_handle", "")).strip() or None,
                                str(item.get("status", "")).strip() or None,
                                str(item.get("school", "")).strip() or None))
-            for value in values:
-                qq_id, name, cf_handle, status, school = value
-                async with db.execute("SELECT cf_handle FROM users WHERE qq_id=?", (qq_id,)) as cursor:
-                    existing = await cursor.fetchone()
-                handle_changed = bool(existing and (existing["cf_handle"] or "").lower() != (cf_handle or "").lower())
-                if handle_changed:
-                    await db.execute("DELETE FROM submissions WHERE user_qq_id=?", (qq_id,))
-                await db.execute(
-                    """INSERT INTO users (qq_id,name,cf_handle,status,school,last_sync_timestamp,history_sync_days)
-                       VALUES (?,?,?,?,?,0,0) ON CONFLICT(qq_id) DO UPDATE SET
-                       name=excluded.name, cf_handle=excluded.cf_handle, status=excluded.status,
-                       school=excluded.school,
-                       last_sync_timestamp=CASE WHEN LOWER(COALESCE(users.cf_handle,'')) != LOWER(COALESCE(excluded.cf_handle,'')) THEN 0 ELSE users.last_sync_timestamp END,
-                       history_sync_days=CASE WHEN LOWER(COALESCE(users.cf_handle,'')) != LOWER(COALESCE(excluded.cf_handle,'')) THEN 0 ELSE users.history_sync_days END""",
-                    value,
-                )
-            await db.commit()
+            with acquire_sync_lock(current_app.config["DB_PATH"]):
+                for value in values:
+                    qq_id, name, cf_handle, status, school = value
+                    async with db.execute("SELECT cf_handle FROM users WHERE qq_id=?", (qq_id,)) as cursor:
+                        existing = await cursor.fetchone()
+                    handle_changed = bool(existing and (existing["cf_handle"] or "").lower() != (cf_handle or "").lower())
+                    if handle_changed:
+                        await db.execute("DELETE FROM submissions WHERE user_qq_id=?", (qq_id,))
+                    await db.execute(
+                        """INSERT INTO users (qq_id,name,cf_handle,status,school,last_sync_timestamp,history_sync_days)
+                           VALUES (?,?,?,?,?,0,0) ON CONFLICT(qq_id) DO UPDATE SET
+                           name=excluded.name, cf_handle=excluded.cf_handle, status=excluded.status,
+                           school=excluded.school,
+                           last_sync_timestamp=CASE WHEN LOWER(COALESCE(users.cf_handle,'')) != LOWER(COALESCE(excluded.cf_handle,'')) THEN 0 ELSE users.last_sync_timestamp END,
+                           history_sync_days=CASE WHEN LOWER(COALESCE(users.cf_handle,'')) != LOWER(COALESCE(excluded.cf_handle,'')) THEN 0 ELSE users.history_sync_days END""",
+                        value,
+                    )
+                await db.commit()
             return jsonify({"success": True, "message": f"已新增或更新 {len(values)} 位成员"})
         qq_ids = [str(x).strip() for x in (data.get("qq_ids") or []) if str(x).strip()]
         if not qq_ids:
             return jsonify({"success": False, "message": "请选择要删除的成员"}), 400
         placeholders = ",".join("?" for _ in qq_ids)
-        await db.execute(f"DELETE FROM submissions WHERE user_qq_id IN ({placeholders})", qq_ids)
-        cursor = await db.execute(f"DELETE FROM users WHERE qq_id IN ({placeholders})", qq_ids)
-        await db.commit()
+        with acquire_sync_lock(current_app.config["DB_PATH"]):
+            await db.execute(f"DELETE FROM submissions WHERE user_qq_id IN ({placeholders})", qq_ids)
+            cursor = await db.execute(f"DELETE FROM users WHERE qq_id IN ({placeholders})", qq_ids)
+            await db.commit()
         return jsonify({"success": True, "message": f"已删除 {cursor.rowcount} 位成员及其过题记录"})
+    except SyncAlreadyRunning as e:
+        await db.rollback()
+        return jsonify({"success": False, "message": f"{e}，请等待更新完成后再修改成员"}), 409
     except Exception as e:
         await db.rollback()
         logger.error(f"管理成员失败: {e}", exc_info=True)

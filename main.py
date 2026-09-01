@@ -30,6 +30,8 @@ except ImportError:
 
 from .webui import run_server
 from .core.crawler import Crawler
+from .core.cf_api import request_cf_api
+from .core.rate_limit import configure_codeforces_api_rate_limiter
 from .core.sync_lock import acquire_sync_lock, SyncAlreadyRunning
 
 @register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.2.1")
@@ -103,6 +105,7 @@ class CodeforcesHelperPlugin(Star):
 
     async def connect_db(self):
         self.db_path = self._prepare_persistent_db()
+        configure_codeforces_api_rate_limiter(self.db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.db = await aiosqlite.connect(self.db_path); self.db.row_factory = aiosqlite.Row
         await self.db.execute("CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT);")
@@ -428,9 +431,11 @@ class CodeforcesHelperPlugin(Star):
     def acm_manager(self): pass
 
     @acm_manager.command("后台启动")
+    @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_start_webui(self, event: AstrMessageEvent): msg = await self.start_webui_process(); yield event.plain_result(msg)
 
     @acm_manager.command("后台关闭")
+    @filter.permission_type(filter.PermissionType.ADMIN)
     async def cmd_stop_webui(self, event: AstrMessageEvent): msg = await self.stop_webui_process(); yield event.plain_result(msg)
 
     @acm_manager.command("rank")
@@ -489,10 +494,9 @@ class CodeforcesHelperPlugin(Star):
 
     @acm_manager.command("contest")
     async def cmd_get_contests(self, event: AstrMessageEvent):
-        url = "https://codeforces.com/api/contest.list?gym=false"
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, timeout=10) as response: response.raise_for_status(); data = await response.json()
+                data = await request_cf_api(session, "contest.list", {"gym": "false"}, timeout=10)
             if data.get('status') != 'OK': yield event.plain_result("获取比赛列表失败。"); return
             upcoming_contests = [c for c in data.get('result', []) if c.get('phase') == 'BEFORE' and 'Kotlin' not in c['name'] and 'Unrated' not in c['name']]; upcoming_contests.reverse()
             if not upcoming_contests: yield event.plain_result("最近没有找到合适的 Codeforces 比赛～"); return
@@ -608,9 +612,17 @@ class CodeforcesHelperPlugin(Star):
         cmd_parts = event.message_str.strip().split()
         if len(cmd_parts) < 3: yield event.plain_result("⚠️ 参数错误，请输入QQ号。\n格式: /acm del_user 12345"); return
         qq_id = cmd_parts[2].strip()
-        async with self.db.execute("SELECT name FROM users WHERE qq_id = ?", (qq_id,)) as cursor: user = await cursor.fetchone()
-        if not user: yield event.plain_result(f"❌ 删除失败：找不到 QQ号为 {qq_id} 的用户。"); return
-        await self.db.execute("DELETE FROM submissions WHERE user_qq_id = ?", (qq_id,)); await self.db.execute("DELETE FROM users WHERE qq_id = ?", (qq_id,)); await self.db.commit()
+        try:
+            with acquire_sync_lock(self.db_path):
+                async with self.db.execute("SELECT name FROM users WHERE qq_id = ?", (qq_id,)) as cursor: user = await cursor.fetchone()
+                if user:
+                    await self.db.execute("DELETE FROM submissions WHERE user_qq_id = ?", (qq_id,)); await self.db.execute("DELETE FROM users WHERE qq_id = ?", (qq_id,)); await self.db.commit()
+        except SyncAlreadyRunning as e:
+            yield event.plain_result(f"❌ {e}，暂时无法删除成员。")
+            return
+        if not user:
+            yield event.plain_result(f"❌ 删除失败：找不到 QQ号为 {qq_id} 的用户。")
+            return
         logger.info(f"管理员 {event.get_sender_id()} 删除了用户 {user['name']} (QQ: {qq_id})。")
         yield event.plain_result(f"✅ 操作成功！\n已永久删除用户【{user['name']}】(QQ: {qq_id})。")
 

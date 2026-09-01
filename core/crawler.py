@@ -1,10 +1,11 @@
 import aiohttp
 import time
 import aiosqlite
-import asyncio
 import hashlib
 import random
 from astrbot.api import logger
+
+from .cf_api import request_cf_api
 
 class Crawler:
     @staticmethod
@@ -29,12 +30,8 @@ class Crawler:
             params["apiKey"] = api_key
             params["time"] = str(int(time.time()))
             params["apiSig"] = Crawler._generate_cf_api_sig(method_name, params, api_key, api_secret)
-        from urllib.parse import urlencode
-        url = f"https://codeforces.com/api/{method_name}?{urlencode(params)}"
         try:
-            async with session.get(url, timeout=20) as response:
-                response.raise_for_status()
-                data = await response.json()
+            data = await request_cf_api(session, method_name, params, timeout=20)
             if data.get("status") != "OK":
                 logger.warning(f"批量 CF 用户资料请求失败: {data.get('comment', '未知错误')}")
                 return 0
@@ -66,12 +63,8 @@ class Crawler:
             params["apiKey"] = api_key
             params["time"] = str(int(time.time()))
             params["apiSig"] = Crawler._generate_cf_api_sig(method_name, params, api_key, api_secret)
-        from urllib.parse import urlencode
-        url = f"https://codeforces.com/api/{method_name}?{urlencode(params)}"
         try:
-            async with session.get(url, timeout=15) as response:
-                response.raise_for_status()
-                data = await response.json()
+            data = await request_cf_api(session, method_name, params, timeout=15)
             if data.get("status") != "OK" or not data.get("result"):
                 logger.warning(f"CF 用户资料请求失败 (用户: {handle}): {data.get('comment', '无数据')}")
                 return False
@@ -118,12 +111,8 @@ class Crawler:
                 params["apiKey"] = api_key
                 params["time"] = str(int(time.time()))
                 params["apiSig"] = Crawler._generate_cf_api_sig(method_name, params, api_key, api_secret)
-            from urllib.parse import urlencode
-            url = f"https://codeforces.com/api/{method_name}?{urlencode(params)}"
             try:
-                async with session.get(url, timeout=30) as response:
-                    response.raise_for_status()
-                    data = await response.json()
+                data = await request_cf_api(session, method_name, params, timeout=30)
             except Exception as e:
                 logger.error(f"获取 CF 用户 {handle} 提交失败（from={from_index}）: {e}")
                 return 0, False
@@ -162,7 +151,13 @@ class Crawler:
             if reached_start or len(submissions) < 100:
                 break
             from_index += 100
-            await asyncio.sleep(0.5)
+
+        async with db.execute("SELECT cf_handle FROM users WHERE qq_id = ?", (qq_id,)) as cursor:
+            current_user = await cursor.fetchone()
+        current_handle = current_user["cf_handle"] if current_user else None
+        if not current_handle or str(current_handle).lower() != str(handle).lower():
+            logger.warning(f"用户 {qq_id} 的 CF Handle 在同步期间发生变化，丢弃本轮旧数据。")
+            return 0, False
 
         before = db.total_changes
         if candidates:

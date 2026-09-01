@@ -19,7 +19,7 @@
   "cf_api_key": {
     "description": "【CF-可选】API Key",
     "type": "string",
-    "hint": "用于提高CF的API请求频率限制，没有可不填。"
+    "hint": "用于签名访问 Codeforces API；不会绕过官方请求频率限制，没有可不填。"
   },
   "cf_api_secret": {
     "description": "【CF-可选】API Secret",

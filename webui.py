@@ -7,6 +7,7 @@ import hypercorn.asyncio
 from pathlib import Path
 
 from .backend.api import api
+from .core.rate_limit import configure_codeforces_api_rate_limiter
 
 app = Quart(__name__, static_folder='public', template_folder='public')
 app.register_blueprint(api, url_prefix="/api")
@@ -22,6 +23,7 @@ async def serve_static(filename):
     return await send_from_directory(public_dir, filename)
 
 async def start_server(db_path, port, plugin_config):
+    configure_codeforces_api_rate_limiter(db_path)
     app.config['DB_PATH'] = db_path
     app.config['PLUGIN_CONFIG'] = plugin_config
     # 每次 WebUI 进程启动生成新的会话密钥，避免将密钥硬编码在仓库中。

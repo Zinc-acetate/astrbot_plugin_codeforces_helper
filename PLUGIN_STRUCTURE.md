@@ -8,6 +8,9 @@
 
 - `main.py`：插件入口、数据库初始化、定时任务、聊天命令和图片排行榜。
 - `core/crawler.py`：Codeforces `user.status` 与 `user.info` 请求、AC 记录及 Rating 缓存。
+- `core/cf_api.py`：统一封装 Codeforces API 请求、共享限流及限流重试。
+- `core/rate_limit.py`：使用独立 SQLite 状态文件协调主插件与 WebUI 子进程的请求间隔。
+- `core/sync_lock.py`：同步任务与成员资料修改共用的跨进程互斥锁。
 - `backend/api.py`：排行榜、后台登录、成员管理和手动同步接口。
 - `webui.py`：Quart Web 服务入口。
 - `public/index.html`：Web 仪表盘与管理后台。
