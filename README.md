@@ -196,7 +196,7 @@ data/plugin_data/astrbot_plugin_codeforces_helper/codeforces_helper.db
 - 上游仓库所有者：`FCYXSZY`
 - 上游许可证：AGPL-3.0
 
-本项目在上游基础上进行了 Codeforces 专项化、插件身份独立、数据模型与同步逻辑调整、Rating 缓存、排行榜和 WebUI 重构、安全加固及文档维护。详细说明见 `NOTICE.md`。
+本项目于 2026 年 7 月 17 日在上游基础上进行了 Codeforces 专项化、插件身份独立、数据模型与同步逻辑调整、Rating 缓存、排行榜和 WebUI 重构、安全加固及文档维护。详细说明见 `NOTICE.md`。
 
 ## 许可证
 
