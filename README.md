@@ -1,12 +1,12 @@
 # astrbot_plugin_codeforces_helper
 
-Codeforces 训练、Rating 缓存、排行榜、定时播报与 Web 管理插件，适用于 AstrBot 的 QQ（aiocqhttp/OneBot）接入。
+Codeforces 训练、Rating 缓存、排行榜、比赛提醒、定时播报与 Web 管理插件，适用于 AstrBot 的 QQ（aiocqhttp/OneBot）接入。
 
 ## 插件信息
 
 - 插件 ID：`astrbot_plugin_codeforces_helper`
 - 显示名称：`Codeforces 训练助手`
-- 当前版本：`1.2.1`
+- 当前版本：`1.3.0`
 - 维护者：`Zinc-acetate`
 - 命令组：`/acm`
 - 功能范围：仅面向 Codeforces；`/acm` 作为历史兼容命令前缀保留，不代表插件仍支持其他 OJ。
@@ -21,6 +21,7 @@ Codeforces 训练、Rating 缓存、排行榜、定时播报与 Web 管理插件
 - 提供群聊文本榜、图片榜、近期过题和近期比赛查询。
 - 按统一间隔自动更新过题记录与 Rating。
 - 按设定时间向指定 QQ 群播报近期过题。
+- 按白名单、比赛类型和自定义提前量向指定 QQ 群发送比赛提醒。
 - 提供带管理员会话保护的 Web 排行榜与成员管理后台。
 - 支持批量新增、更新、删除成员和手动同步。
 - 支持响应式布局以及可持久化的日间、夜间主题。
@@ -63,6 +64,7 @@ git clone https://github.com/Zinc-acetate/astrbot_plugin_codeforces_helper.git
 - `command_prefix`：命令前缀提示项；当前命令组为 `/acm`。
 - `webui_port`：Web 管理后台端口，默认 `8088`。
 - `admin_qq_id`：用于接收重要错误通知的管理员 QQ 号。
+- `contest_reminder`：比赛订阅提醒设置，包含启用开关、群聊白名单、提醒时间和比赛类型过滤。
 - `cf_api_key`：可选的 Codeforces API Key。
 - `cf_api_secret`：与 API Key 配套的可选 Secret。
 
@@ -73,6 +75,8 @@ git clone https://github.com/Zinc-acetate/astrbot_plugin_codeforces_helper.git
 ```
 
 Codeforces API 凭证属于敏感信息，请只在 AstrBot 配置页面或服务器本地配置文件中填写，禁止提交到公开仓库。
+
+比赛提醒默认关闭。启用后，`group_whitelist` 只允许手动配置的群号接收通知，非白名单群聊不会收到提醒。`reminder_times` 使用空格分隔多组时间，纯数字默认按小时解析，并支持 `1min`、`1s`、`1h`、`1d` 等写法；允许范围为 1 秒至 365 天，默认值 `24 1` 表示提前 24 小时和 1 小时提醒。Div. 2、Div. 3、Div. 4、Educational 和其他比赛均可在插件设置界面独立开关。
 
 ## Web 管理后台
 
@@ -167,6 +171,7 @@ QQ 号与姓名必填，其余字段可留空。例如：
 - 主插件与 WebUI 子进程共享 Codeforces API 限流状态，请求启动间隔不少于 2.1 秒；遇到官方限流响应时最多自动重试 2 次。
 - 成员资料修改和删除与同步任务互斥；同步期间提交修改会返回忙碌提示，避免旧 Handle 的数据写入新账号。
 - API 请求未完整成功时不会推进同步游标，避免失败期间的记录被跳过。
+- 比赛列表每 10 分钟刷新一次，提醒本身由一次性定时任务精确触发，不会因秒级提醒配置而高频请求 Codeforces API。
 - 所有定时任务使用 `Asia/Shanghai` 时区。
 
 运行数据库位于 AstrBot 的独立插件数据目录：
@@ -207,6 +212,8 @@ data/plugin_data/astrbot_plugin_codeforces_helper/codeforces_helper.db
 本项目及其上游代码按照 [GNU Affero General Public License v3.0](LICENSE) 发布。分发修改版本或通过网络向用户提供其功能时，请遵守 AGPL-3.0 的源代码提供、许可证保留和修改说明等义务。
 
 ## 问题反馈与贡献
+
+版本更新记录见 [CHANGELOG.md](CHANGELOG.md)。
 
 欢迎通过仓库的 Issues 反馈问题，也欢迎提交 Pull Request：
 

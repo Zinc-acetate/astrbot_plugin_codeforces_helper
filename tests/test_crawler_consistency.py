@@ -7,16 +7,16 @@ from unittest.mock import AsyncMock, patch
 
 
 def install_runtime_stubs():
-    if importlib.util.find_spec("aiohttp") is None:
+    if "aiohttp" not in sys.modules and importlib.util.find_spec("aiohttp") is None:
         aiohttp = types.ModuleType("aiohttp")
         aiohttp.ClientSession = object
         sys.modules["aiohttp"] = aiohttp
-    if importlib.util.find_spec("aiosqlite") is None:
+    if "aiosqlite" not in sys.modules and importlib.util.find_spec("aiosqlite") is None:
         aiosqlite = types.ModuleType("aiosqlite")
         aiosqlite.Connection = object
         aiosqlite.Row = dict
         sys.modules["aiosqlite"] = aiosqlite
-    if importlib.util.find_spec("astrbot") is None:
+    if "astrbot" not in sys.modules and importlib.util.find_spec("astrbot") is None:
         astrbot = types.ModuleType("astrbot")
         api = types.ModuleType("astrbot.api")
         api.logger = types.SimpleNamespace(error=lambda *args, **kwargs: None,

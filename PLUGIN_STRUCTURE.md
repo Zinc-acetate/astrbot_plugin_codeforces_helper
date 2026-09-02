@@ -9,6 +9,7 @@
 - `main.py`：插件入口、数据库初始化、定时任务、聊天命令和图片排行榜。
 - `core/crawler.py`：Codeforces `user.status` 与 `user.info` 请求、AC 记录及 Rating 缓存。
 - `core/cf_api.py`：统一封装 Codeforces API 请求、共享限流及限流重试。
+- `core/contest_reminder.py`：比赛类型分类、白名单与提醒时间解析、一次性提醒任务规划。
 - `core/rate_limit.py`：使用独立 SQLite 状态文件协调主插件与 WebUI 子进程的请求间隔。
 - `core/sync_lock.py`：同步任务与成员资料修改共用的跨进程互斥锁。
 - `backend/api.py`：排行榜、后台登录、成员管理和手动同步接口。
@@ -17,6 +18,7 @@
 - `_conf_schema.json`：命令提示、Web 端口、管理员 QQ 与可选 CF API 凭证。
 - `metadata.yaml`：AstrBot 插件市场和加载元数据。
 - `NOTICE.md`：上游来源与修改声明。
+- `CHANGELOG.md`：版本更新日志。
 - `data/plugin_data/astrbot_plugin_codeforces_helper/codeforces_helper.db`：位于插件安装目录之外的 SQLite 持久化数据库，不纳入 Git。
 
 ## 插件身份

@@ -2,15 +2,19 @@
 
 import asyncio
 import aiohttp
+import json
 import time
 import os
 import sqlite3
+from collections.abc import Mapping
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 import aiosqlite
 from multiprocessing import Process
 import urllib.parse
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.jobstores.base import JobLookupError
 from werkzeug.security import generate_password_hash
@@ -31,10 +35,41 @@ except ImportError:
 from .webui import run_server
 from .core.crawler import Crawler
 from .core.cf_api import request_cf_api
+from .core.contest_reminder import (
+    CONTEST_REMINDER_JOB_PREFIX,
+    build_reminder_specs,
+    classify_contest,
+    contest_is_enabled,
+    format_reminder_offset,
+    parse_group_whitelist,
+    parse_reminder_offsets,
+)
 from .core.rate_limit import configure_codeforces_api_rate_limiter
 from .core.sync_lock import acquire_sync_lock, SyncAlreadyRunning
 
-@register("astrbot_plugin_codeforces_helper", "Zinc-acetate", "Codeforces 训练、Rating 缓存与管理助手", "1.2.1")
+
+SHANGHAI_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
+CONTEST_CATEGORY_LABELS = {
+    "div2": "Div. 2",
+    "div3": "Div. 3",
+    "div4": "Div. 4",
+    "educational": "Educational",
+    "other": "其他",
+}
+CONTEST_FILTER_SWITCHES = (
+    ("include_div2", True),
+    ("include_div3", True),
+    ("include_div4", True),
+    ("include_educational", True),
+    ("include_other", False),
+)
+
+@register(
+    "astrbot_plugin_codeforces_helper",
+    "Zinc-acetate",
+    "Codeforces 训练、Rating 缓存、比赛提醒与管理助手",
+    "1.3.0",
+)
 class CodeforcesHelperPlugin(Star):
     db: aiosqlite.Connection
     db_path: Path
@@ -47,12 +82,23 @@ class CodeforcesHelperPlugin(Star):
         self.FONT_PATH = Path(__file__).parent / "resources" / "SourceHanSansSC-Bold.otf"
 
     async def initialize(self):
-        logger.info("Codeforces Helper v1.2.1 开始初始化...")
+        logger.info("Codeforces Helper v1.3.0 开始初始化...")
         await self.connect_db()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         settings = await self._get_all_settings()
         await self.reschedule_jobs(settings)
+        self._contest_reminder_config_signature = self._get_contest_reminder_config_signature()
         self.scheduler.add_job(self._watch_runtime_settings, 'interval', minutes=1, id='settings_watch_job', replace_existing=True)
+        self.scheduler.add_job(
+            self.refresh_contest_reminder_jobs,
+            IntervalTrigger(minutes=10, timezone=SHANGHAI_TZ),
+            id='contest_reminder_refresh_job',
+            name='Codeforces contest reminder refresh',
+            replace_existing=True,
+            max_instances=1,
+            coalesce=True,
+            next_run_time=datetime.now(SHANGHAI_TZ),
+        )
         self.scheduler.start()
         logger.info("✅ Codeforces Helper 初始化成功！")
 
@@ -176,8 +222,169 @@ class CodeforcesHelperPlugin(Star):
             value = max(5, min(value, 1440))
             if value != getattr(self, '_scheduled_sync_interval', None):
                 await self.reschedule_jobs(await self._get_all_settings())
+            contest_signature = self._get_contest_reminder_config_signature()
+            if contest_signature != getattr(self, '_contest_reminder_config_signature', None):
+                self._contest_reminder_config_signature = contest_signature
+                await self.refresh_contest_reminder_jobs()
         except Exception as e:
             logger.error(f"检查运行时设置失败: {e}")
+
+    def _get_contest_reminder_config(self) -> dict:
+        value = self.config.get("contest_reminder", {})
+        return dict(value) if isinstance(value, Mapping) else {}
+
+    def _get_contest_reminder_config_signature(self) -> str:
+        return json.dumps(
+            self._get_contest_reminder_config(),
+            ensure_ascii=False,
+            sort_keys=True,
+            default=str,
+        )
+
+    @staticmethod
+    def _config_switch(config: Mapping, key: str, default: bool = False) -> bool:
+        value = config.get(key, default)
+        if isinstance(value, str):
+            return value.strip().lower() in {"1", "true", "yes", "on"}
+        return bool(value)
+
+    def _remove_stale_contest_reminder_jobs(self, desired_job_ids=frozenset()):
+        for job in self.scheduler.get_jobs():
+            if job.id.startswith(CONTEST_REMINDER_JOB_PREFIX) and job.id not in desired_job_ids:
+                self.scheduler.remove_job(job.id)
+
+    async def refresh_contest_reminder_jobs(self):
+        config = self._get_contest_reminder_config()
+        if not self._config_switch(config, "enabled"):
+            self._remove_stale_contest_reminder_jobs()
+            return
+
+        try:
+            offsets = parse_reminder_offsets(str(config.get("reminder_times", "24 1")))
+        except ValueError as exc:
+            logger.error(f"CF 比赛提醒时间配置无效: {exc}")
+            self._remove_stale_contest_reminder_jobs()
+            return
+        groups, invalid_groups = parse_group_whitelist(config.get("group_whitelist", []))
+        if invalid_groups:
+            logger.warning(f"忽略无效的 CF 比赛提醒群号: {', '.join(invalid_groups)}")
+        has_enabled_filter = any(
+            self._config_switch(config, key, default)
+            for key, default in CONTEST_FILTER_SWITCHES
+        )
+        if not groups or not offsets or not has_enabled_filter:
+            self._remove_stale_contest_reminder_jobs()
+            return
+
+        try:
+            async with aiohttp.ClientSession() as session:
+                data = await request_cf_api(
+                    session,
+                    "contest.list",
+                    {"gym": "false"},
+                    timeout=20,
+                )
+            if data.get("status") != "OK":
+                logger.warning(f"刷新 CF 比赛提醒失败: {data.get('comment', '未知错误')}")
+                return
+        except Exception as exc:
+            logger.error(f"刷新 CF 比赛提醒失败: {exc}", exc_info=True)
+            return
+
+        specs = build_reminder_specs(
+            data.get("result", []),
+            offsets=offsets,
+            filter_config=config,
+            now_timestamp=int(time.time()),
+        )
+        desired_job_ids = {spec.job_id for spec in specs}
+        existing_job_ids = {
+            job.id
+            for job in self.scheduler.get_jobs()
+            if job.id.startswith(CONTEST_REMINDER_JOB_PREFIX)
+        }
+        for spec in specs:
+            self.scheduler.add_job(
+                self.send_contest_reminder,
+                DateTrigger(
+                    run_date=datetime.fromtimestamp(spec.run_at_timestamp, tz=SHANGHAI_TZ)
+                ),
+                args=(
+                    spec.contest_id,
+                    spec.contest_name,
+                    spec.start_timestamp,
+                    spec.offset_seconds,
+                ),
+                id=spec.job_id,
+                name=f"CF contest reminder: {spec.contest_name}",
+                replace_existing=True,
+                misfire_grace_time=30,
+            )
+        self._remove_stale_contest_reminder_jobs(desired_job_ids)
+        if existing_job_ids != desired_job_ids:
+            logger.info(
+                f"CF 比赛提醒已刷新：{len(specs)} 个任务，{len(groups)} 个白名单群。"
+            )
+
+    async def send_contest_reminder(
+        self,
+        contest_id: int,
+        contest_name: str,
+        start_timestamp: int,
+        offset_seconds: int,
+    ):
+        config = self._get_contest_reminder_config()
+        if not self._config_switch(config, "enabled"):
+            return
+        try:
+            offsets = parse_reminder_offsets(str(config.get("reminder_times", "24 1")))
+        except ValueError as exc:
+            logger.error(f"CF 比赛提醒时间配置无效: {exc}")
+            return
+        if int(offset_seconds) not in offsets or not contest_is_enabled(contest_name, config):
+            return
+
+        groups, invalid_groups = parse_group_whitelist(config.get("group_whitelist", []))
+        if invalid_groups:
+            logger.warning(f"忽略无效的 CF 比赛提醒群号: {', '.join(invalid_groups)}")
+        if not groups:
+            return
+        if int(start_timestamp) < int(time.time()) - 30:
+            logger.info(f"跳过已开始的 CF 比赛提醒: {contest_name}")
+            return
+
+        category = classify_contest(contest_name)
+        category_label = CONTEST_CATEGORY_LABELS.get(category, "其他")
+        offset_label = format_reminder_offset(offset_seconds)
+        start_text = datetime.fromtimestamp(
+            int(start_timestamp), tz=SHANGHAI_TZ
+        ).strftime("%Y-%m-%d %H:%M:%S")
+        message = (
+            "⏰ Codeforces 比赛提醒\n"
+            f"类型：{category_label}\n"
+            f"比赛：{contest_name}\n"
+            f"提前：{offset_label}\n"
+            f"开始时间：{start_text}\n"
+            f"报名链接：https://codeforces.com/contestRegistration/{int(contest_id)}"
+        )
+
+        qq_platform = self.context.get_platform("aiocqhttp")
+        if not qq_platform:
+            logger.error("CF 比赛提醒发送失败：无法获取 QQ 平台实例。")
+            return
+        onebot_message = [{"type": "text", "data": {"text": message}}]
+        for group_id in groups:
+            try:
+                await qq_platform.bot.send_group_msg(
+                    group_id=group_id,
+                    message=onebot_message,
+                )
+                logger.info(f"已向白名单群 {group_id} 发送 CF 比赛提醒: {contest_name}")
+            except Exception as exc:
+                logger.error(
+                    f"向白名单群 {group_id} 发送 CF 比赛提醒失败: {exc}",
+                    exc_info=True,
+                )
 
     async def start_webui_process(self):
         if self.webui_process and self.webui_process.is_alive(): return f"管理后台已在运行！"

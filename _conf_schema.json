@@ -16,6 +16,59 @@
     "type": "string",
     "hint": "用于接收重要错误通知，请务必填写。"
   },
+  "contest_reminder": {
+    "description": "【CF】比赛订阅提醒（测试）",
+    "type": "object",
+    "hint": "仅向白名单群聊发送提醒；比赛列表每10分钟刷新一次。",
+    "items": {
+      "enabled": {
+        "description": "启用比赛订阅提醒",
+        "type": "bool",
+        "default": false
+      },
+      "group_whitelist": {
+        "description": "群聊提醒白名单",
+        "type": "list",
+        "default": [],
+        "items": {
+          "type": "string"
+        },
+        "hint": "手动添加允许接收提醒的QQ群号；不在白名单中的群聊绝不会收到提醒。"
+      },
+      "reminder_times": {
+        "description": "提前提醒时间",
+        "type": "string",
+        "default": "24 1",
+        "hint": "使用空格分隔多组时间；纯数字默认单位为小时，也支持1min、1s、1h、1d，范围为1秒至365天。例如：24 1 30min。"
+      },
+      "include_div2": {
+        "description": "提醒 Div. 2 比赛",
+        "type": "bool",
+        "default": true
+      },
+      "include_div3": {
+        "description": "提醒 Div. 3 比赛",
+        "type": "bool",
+        "default": true
+      },
+      "include_div4": {
+        "description": "提醒 Div. 4 比赛",
+        "type": "bool",
+        "default": true
+      },
+      "include_educational": {
+        "description": "提醒 Educational 比赛",
+        "type": "bool",
+        "default": true
+      },
+      "include_other": {
+        "description": "提醒其他类型比赛",
+        "type": "bool",
+        "default": false,
+        "hint": "包括未匹配到 Div. 2/3/4 或 Educational 的常规 Codeforces 比赛。"
+      }
+    }
+  },
   "cf_api_key": {
     "description": "【CF-可选】API Key",
     "type": "string",
