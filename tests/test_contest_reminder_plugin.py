@@ -249,7 +249,7 @@ class ContestReminderPluginTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([group_id for group_id, _ in bot.sent], [123456, 789012])
         message = bot.sent[0][1][0]["data"]["text"]
-        self.assertIn("提前：1秒", message)
+        self.assertIn("距离开始：1秒", message)
         self.assertIn("https://codeforces.com/contestRegistration/100", message)
 
         bot.sent.clear()

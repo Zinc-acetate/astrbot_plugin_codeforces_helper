@@ -363,7 +363,7 @@ class CodeforcesHelperPlugin(Star):
             "⏰ Codeforces 比赛提醒\n"
             f"类型：{category_label}\n"
             f"比赛：{contest_name}\n"
-            f"提前：{offset_label}\n"
+            f"距离开始：{offset_label}\n"
             f"开始时间：{start_text}\n"
             f"报名链接：https://codeforces.com/contestRegistration/{int(contest_id)}"
         )
