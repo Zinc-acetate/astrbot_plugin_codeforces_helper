@@ -6,7 +6,7 @@ Codeforces 训练、Rating 缓存、排行榜、比赛提醒、定时播报与 W
 
 - 插件 ID：`astrbot_plugin_codeforces_helper`
 - 显示名称：`Codeforces 训练助手`
-- 当前版本：`1.3.0`
+- 当前版本：`1.3.1`
 - 维护者：`Zinc-acetate`
 - 命令组：`/acm`
 - 功能范围：仅面向 Codeforces；`/acm` 作为历史兼容命令前缀保留，不代表插件仍支持其他 OJ。
@@ -63,6 +63,7 @@ git clone https://github.com/Zinc-acetate/astrbot_plugin_codeforces_helper.git
 
 - `command_prefix`：命令前缀提示项；当前命令组为 `/acm`。
 - `webui_port`：Web 管理后台端口，默认 `8088`。
+- `webui_auto_start`：插件启动或热重载后是否自动打开管理后台；后台启动、关闭命令会同步更新该选项。
 - `admin_qq_id`：用于接收重要错误通知的管理员 QQ 号。
 - `contest_reminder`：比赛订阅提醒设置，包含启用开关、群聊白名单、提醒时间和比赛类型过滤。
 - `cf_api_key`：可选的 Codeforces API Key。
@@ -97,6 +98,8 @@ http://服务器IP:8088
 ```text
 /acm 后台关闭
 ```
+
+执行 `/acm 后台启动` 会把 `webui_auto_start` 保存为开启，执行 `/acm 后台关闭` 会保存为关闭。AstrBot 保存插件设置并热重载插件时，旧后台进程会正常关闭；若该选项为开启，新插件实例初始化后会自动启动后台。
 
 数据库首次初始化时，Web 后台默认密码为 `123456`。首次登录后必须立即修改，新密码至少 6 位。公网开放时建议使用 HTTPS 反向代理、访问控制和防火墙白名单。
 

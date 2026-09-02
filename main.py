@@ -68,7 +68,7 @@ CONTEST_FILTER_SWITCHES = (
     "astrbot_plugin_codeforces_helper",
     "Zinc-acetate",
     "Codeforces 训练、Rating 缓存、比赛提醒与管理助手",
-    "1.3.0",
+    "1.3.1",
 )
 class CodeforcesHelperPlugin(Star):
     db: aiosqlite.Connection
@@ -82,7 +82,7 @@ class CodeforcesHelperPlugin(Star):
         self.FONT_PATH = Path(__file__).parent / "resources" / "SourceHanSansSC-Bold.otf"
 
     async def initialize(self):
-        logger.info("Codeforces Helper v1.3.0 开始初始化...")
+        logger.info("Codeforces Helper v1.3.1 开始初始化...")
         await self.connect_db()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         settings = await self._get_all_settings()
@@ -100,12 +100,13 @@ class CodeforcesHelperPlugin(Star):
             next_run_time=datetime.now(SHANGHAI_TZ),
         )
         self.scheduler.start()
+        await self._auto_start_webui_if_enabled()
         logger.info("✅ Codeforces Helper 初始化成功！")
 
     async def terminate(self):
         logger.info("正在关闭 Codeforces Helper...");
         if hasattr(self, 'scheduler') and self.scheduler.running: self.scheduler.shutdown()
-        await self.stop_webui_process()
+        await self.stop_webui_process(persist=False)
         if hasattr(self, 'db') and self.db: await self.db.close()
         logger.info("Codeforces Helper 已安全关闭。")
 
@@ -386,15 +387,42 @@ class CodeforcesHelperPlugin(Star):
                     exc_info=True,
                 )
 
-    async def start_webui_process(self):
-        if self.webui_process and self.webui_process.is_alive(): return f"管理后台已在运行！"
+    def _set_webui_auto_start(self, enabled: bool) -> bool:
+        self.config["webui_auto_start"] = bool(enabled)
+        save_config = getattr(self.config, "save_config", None)
+        if not callable(save_config):
+            logger.warning("当前配置对象不支持持久化 WebUI 自动启动状态。")
+            return False
+        try:
+            save_config()
+            return True
+        except Exception as exc:
+            logger.error(f"保存 WebUI 自动启动状态失败: {exc}", exc_info=True)
+            return False
+
+    async def _auto_start_webui_if_enabled(self):
+        if not self._config_switch(self.config, "webui_auto_start"):
+            return
+        message = await self.start_webui_process(persist=False)
+        logger.info(f"WebUI 自动启动结果: {message}")
+
+    async def start_webui_process(self, persist: bool = False):
+        if self.webui_process and self.webui_process.is_alive():
+            if persist:
+                self._set_webui_auto_start(True)
+            return f"管理后台已在运行！"
         port = self.config.get('webui_port', 8088); logger.info(f"正在端口 {port} 上启动 WebUI 子进程...")
         webui_config = {"cf_api_key": self.config.get("cf_api_key"), "cf_api_secret": self.config.get("cf_api_secret")}
         self.webui_process = Process(target=run_server, args=(str(self.db_path), port, webui_config)); self.webui_process.start(); await asyncio.sleep(2)
-        if self.webui_process.is_alive(): logger.info(f"WebUI 子进程已启动, PID: {self.webui_process.pid}"); return f"✨ 管理后台已启动！\n请访问: http://<你的服务器IP>:{port}"
+        if self.webui_process.is_alive():
+            if persist:
+                self._set_webui_auto_start(True)
+            logger.info(f"WebUI 子进程已启动, PID: {self.webui_process.pid}"); return f"✨ 管理后台已启动！\n请访问: http://<你的服务器IP>:{port}"
         else: logger.error("WebUI 子进程启动失败！"); return "❌ 后台启动失败"
 
-    async def stop_webui_process(self):
+    async def stop_webui_process(self, persist: bool = False):
+        if persist:
+            self._set_webui_auto_start(False)
         if not self.webui_process or not self.webui_process.is_alive(): return "管理后台未在运行。"
         logger.info(f"正在终止 WebUI 子进程 (PID: {self.webui_process.pid})..."); self.webui_process.terminate(); self.webui_process.join(timeout=5)
         if self.webui_process.is_alive(): self.webui_process.kill()
@@ -639,11 +667,11 @@ class CodeforcesHelperPlugin(Star):
 
     @acm_manager.command("后台启动")
     @filter.permission_type(filter.PermissionType.ADMIN)
-    async def cmd_start_webui(self, event: AstrMessageEvent): msg = await self.start_webui_process(); yield event.plain_result(msg)
+    async def cmd_start_webui(self, event: AstrMessageEvent): msg = await self.start_webui_process(persist=True); yield event.plain_result(msg)
 
     @acm_manager.command("后台关闭")
     @filter.permission_type(filter.PermissionType.ADMIN)
-    async def cmd_stop_webui(self, event: AstrMessageEvent): msg = await self.stop_webui_process(); yield event.plain_result(msg)
+    async def cmd_stop_webui(self, event: AstrMessageEvent): msg = await self.stop_webui_process(persist=True); yield event.plain_result(msg)
 
     @acm_manager.command("rank")
     async def cmd_show_rank(self, event: AstrMessageEvent):

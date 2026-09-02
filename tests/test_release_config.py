@@ -28,6 +28,11 @@ class ContestReminderConfigTests(unittest.TestCase):
         ):
             self.assertEqual(items[key]["type"], "bool")
 
+    def test_astrbot_schema_exposes_webui_auto_start(self):
+        setting = self.schema["webui_auto_start"]
+        self.assertEqual(setting["type"], "bool")
+        self.assertFalse(setting["default"])
+
 
 class ReleaseMetadataTests(unittest.TestCase):
     def test_version_is_consistent(self):
@@ -47,15 +52,16 @@ class ReleaseMetadataTests(unittest.TestCase):
             and isinstance(decorator.func, ast.Name)
             and decorator.func.id == "register"
         )
-        self.assertEqual(register_call.args[-1].value, "1.3.0")
-        self.assertIn("Codeforces Helper v1.3.0", main_source)
-        self.assertIn("当前版本：`1.3.0`", readme)
-        self.assertRegex(metadata, r"(?m)^version: 1\.3\.0$")
+        self.assertEqual(register_call.args[-1].value, "1.3.1")
+        self.assertIn("Codeforces Helper v1.3.1", main_source)
+        self.assertIn("当前版本：`1.3.1`", readme)
+        self.assertRegex(metadata, r"(?m)^version: 1\.3\.1$")
 
     def test_changelog_has_requested_entry(self):
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-        self.assertIn("## 1.3.0", changelog)
-        self.assertIn("添加cf比赛提醒（测试）", changelog)
+        self.assertIn("## 1.3.1", changelog)
+        self.assertIn("添加 CF 比赛订阅提醒（测试）", changelog)
+        self.assertIn("优化管理后台启动逻辑，支持随插件重载自动恢复", changelog)
 
     def test_scheduler_and_sender_are_wired(self):
         source = (ROOT / "main.py").read_text(encoding="utf-8")

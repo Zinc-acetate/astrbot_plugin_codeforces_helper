@@ -4,7 +4,7 @@ import time
 import types
 import unittest
 from pathlib import Path
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_NAME = ROOT.name
@@ -65,6 +65,46 @@ class FakeBot:
 
     async def send_group_msg(self, group_id, message):
         self.sent.append((group_id, message))
+
+
+class FakeConfig(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.save_count = 0
+
+    def save_config(self):
+        self.save_count += 1
+
+
+class FakeProcess:
+    next_pid = 4200
+
+    def __init__(self, target=None, args=()):
+        self.target = target
+        self.args = args
+        self.alive = False
+        self.pid = FakeProcess.next_pid
+        FakeProcess.next_pid += 1
+
+    def start(self):
+        self.alive = True
+
+    def is_alive(self):
+        return self.alive
+
+    def terminate(self):
+        self.alive = False
+
+    def join(self, timeout=None):
+        return None
+
+    def kill(self):
+        self.alive = False
+
+
+class FailingProcess(FakeProcess):
+    def start(self):
+        self.alive = False
 
 
 def install_main_import_stubs():
@@ -284,6 +324,77 @@ class ContestReminderPluginTests(unittest.IsolatedAsyncioTestCase):
 
         request.assert_not_awaited()
         self.assertEqual(plugin.scheduler.jobs, {})
+
+    async def test_manual_webui_start_and_stop_persist_desired_state(self):
+        plugin, _ = self.make_plugin({})
+        plugin.config = FakeConfig({"webui_auto_start": False, "webui_port": 8088})
+        plugin.db_path = ROOT / "fake.db"
+        plugin.webui_process = None
+
+        with (
+            patch.object(plugin_module, "Process", FakeProcess),
+            patch.object(plugin_module.asyncio, "sleep", AsyncMock()),
+        ):
+            start_message = await plugin.start_webui_process(persist=True)
+
+        self.assertIn("后台已启动", start_message)
+        self.assertTrue(plugin.config["webui_auto_start"])
+        self.assertEqual(plugin.config.save_count, 1)
+
+        stop_message = await plugin.stop_webui_process(persist=True)
+        self.assertIn("后台已关闭", stop_message)
+        self.assertFalse(plugin.config["webui_auto_start"])
+        self.assertEqual(plugin.config.save_count, 2)
+
+    async def test_lifecycle_stop_preserves_auto_start_setting(self):
+        plugin, _ = self.make_plugin({})
+        plugin.config = FakeConfig({"webui_auto_start": True})
+        plugin.webui_process = FakeProcess()
+        plugin.webui_process.start()
+
+        await plugin.stop_webui_process(persist=False)
+
+        self.assertTrue(plugin.config["webui_auto_start"])
+        self.assertEqual(plugin.config.save_count, 0)
+
+    async def test_failed_manual_start_does_not_persist_enabled_state(self):
+        plugin, _ = self.make_plugin({})
+        plugin.config = FakeConfig({"webui_auto_start": False, "webui_port": 8088})
+        plugin.db_path = ROOT / "fake.db"
+        plugin.webui_process = None
+
+        with (
+            patch.object(plugin_module, "Process", FailingProcess),
+            patch.object(plugin_module.asyncio, "sleep", AsyncMock()),
+        ):
+            message = await plugin.start_webui_process(persist=True)
+
+        self.assertIn("启动失败", message)
+        self.assertFalse(plugin.config["webui_auto_start"])
+        self.assertEqual(plugin.config.save_count, 0)
+
+    async def test_initialize_helper_starts_webui_when_configured(self):
+        plugin, _ = self.make_plugin({})
+        plugin.config = FakeConfig({"webui_auto_start": True})
+        plugin.start_webui_process = AsyncMock(return_value="ok")
+
+        await plugin._auto_start_webui_if_enabled()
+
+        plugin.start_webui_process.assert_awaited_once_with(persist=False)
+
+    async def test_webui_commands_persist_user_intent(self):
+        plugin, _ = self.make_plugin({})
+        plugin.start_webui_process = AsyncMock(return_value="started")
+        plugin.stop_webui_process = AsyncMock(return_value="stopped")
+        event = types.SimpleNamespace(plain_result=lambda value: value)
+
+        start_results = [item async for item in plugin.cmd_start_webui(event)]
+        stop_results = [item async for item in plugin.cmd_stop_webui(event)]
+
+        self.assertEqual(start_results, ["started"])
+        self.assertEqual(stop_results, ["stopped"])
+        plugin.start_webui_process.assert_awaited_once_with(persist=True)
+        plugin.stop_webui_process.assert_awaited_once_with(persist=True)
 
 
 if __name__ == "__main__":

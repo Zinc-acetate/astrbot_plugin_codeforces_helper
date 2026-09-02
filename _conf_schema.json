@@ -11,6 +11,12 @@
     "hint": "修改后需要重启插件的WebUI才能生效",
     "default": 8088
   },
+  "webui_auto_start": {
+    "description": "【系统】随插件自动启动管理后台",
+    "type": "bool",
+    "default": false,
+    "hint": "启用后，插件启动或热重载完成时会自动打开管理后台；/acm 后台启动与后台关闭命令会同步修改此选项。"
+  },
   "admin_qq_id": {
     "description": "【重要】机器人管理员QQ号",
     "type": "string",
