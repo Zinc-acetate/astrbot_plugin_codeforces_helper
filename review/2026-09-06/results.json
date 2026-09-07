@@ -1,0 +1,99 @@
+[
+  {
+    "check": "changed_handle_clears_rating",
+    "expected": null,
+    "actual": 2500,
+    "passed": false,
+    "detail": {
+      "cf_handle": "new_handle",
+      "cf_rating": 2500,
+      "cf_max_rating": 2700,
+      "cf_rating_updated_at": 1799913600
+    }
+  },
+  {
+    "check": "testing_then_ok_is_eventually_recorded",
+    "expected": 1,
+    "actual": 0,
+    "passed": false
+  },
+  {
+    "check": "deep_sync_removes_invalidated_acceptance",
+    "expected": 0,
+    "actual": 1,
+    "passed": false
+  },
+  {
+    "check": "shallow_sync_preserves_gap_main",
+    "expected": 1,
+    "actual": 0,
+    "passed": false,
+    "detail": {
+      "last_sync_timestamp": 1800000000,
+      "history_sync_days": 30
+    }
+  },
+  {
+    "check": "shared_handle_updates_both_members",
+    "expected": [
+      1900,
+      1900
+    ],
+    "actual": [
+      2500,
+      1900
+    ],
+    "passed": false,
+    "detail": [
+      {
+        "qq_id": "10001",
+        "cf_rating": 2500
+      },
+      {
+        "qq_id": "10002",
+        "cf_rating": 1900
+      }
+    ]
+  },
+  {
+    "check": "invalid_handle_does_not_block_other_profiles",
+    "expected": 1900,
+    "actual": 2500,
+    "passed": false
+  },
+  {
+    "check": "password_change_revokes_other_sessions",
+    "expected": 401,
+    "actual": 200,
+    "passed": false
+  },
+  {
+    "check": "same_api_history_same_weekly_count",
+    "expected": 0,
+    "actual": 1,
+    "passed": false,
+    "detail": {
+      "incremental": 0,
+      "fresh_import": 1
+    }
+  },
+  {
+    "check": "hourly_report_eventually_reports_late_sync",
+    "expected": true,
+    "actual": false,
+    "passed": false,
+    "detail": {
+      "cached_solves": 1
+    }
+  },
+  {
+    "check": "shallow_sync_preserves_gap_backend",
+    "expected": 1,
+    "actual": 0,
+    "passed": false,
+    "detail": {
+      "last_sync_timestamp": 1800000000,
+      "history_sync_days": 30
+    }
+  }
+]

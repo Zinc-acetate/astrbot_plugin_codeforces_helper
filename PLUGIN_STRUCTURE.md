@@ -12,6 +12,7 @@
 - `core/contest_reminder.py`：比赛类型分类、白名单与提醒时间解析、一次性提醒任务规划。
 - `core/rate_limit.py`：使用独立 SQLite 状态文件协调主插件与 WebUI 子进程的请求间隔。
 - `core/sync_lock.py`：同步任务与成员资料修改共用的跨进程互斥锁。
+- `core/sync_state.py`：提交历史迁移、同步覆盖范围、判决重查、首次有效 AC 汇总和群播报确认。
 - `backend/api.py`：排行榜、后台登录、成员管理和手动同步接口。
 - `webui.py`：Quart Web 服务入口。
 - `public/index.html`：Web 仪表盘与管理后台。
@@ -34,12 +35,15 @@
 
 - `users`：QQ、姓名、CF Handle、身份、学校、同步时间、当前及最高 Rating 和段位。
 - `submissions`：仅保存 `platform='codeforces'` 的去重 AC 记录。
+- `cf_submission_records`：按提交 ID 保存原始判决及待复核状态，用于重判纠正和首次有效 AC 计算。
+- `solve_report_state` / `solve_report_receipts`：每群首次启用的时间边界及成功发送的过题记录。
 - `settings`：同步间隔、播报设置和后台密码哈希等运行设置。
 
 ## 同步流程
 
 - 普通同步通过 `user.status` 拉取增量 AC 记录。
 - 深度同步分页拉取指定天数内的 AC 记录。
+- 手动深度同步同时补齐游标缺口；普通同步回看 2 天并复查待判提交，每 7 天复核已覆盖历史。
 - `user.info` 更新当前 Rating、最高 Rating 与对应段位。
 - 定时任务默认每 60 分钟同步，可在 Web 后台设置为 5 至 1440 分钟。
 - 聊天命令和网页查询优先读取本地缓存。

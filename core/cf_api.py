@@ -21,7 +21,14 @@ async def request_cf_api(
     for attempt in range(rate_limit_retries + 1):
         await limiter.wait()
         try:
-            async with session.get(url, timeout=timeout) as response:
+            # Keep decoding independent of optional Brotli libraries/proxy behavior.
+            async with session.get(url, timeout=timeout, headers={"Accept-Encoding": "gzip, deflate"}) as response:
+                # CF returns structured FAILED replies with HTTP 400 (e.g. bad handles).
+                # Preserve that reason so callers can isolate bad members from a batch.
+                if getattr(response, "status", None) == 400:
+                    data = await response.json()
+                    if isinstance(data, dict) and data.get("status") == "FAILED":
+                        return data
                 response.raise_for_status()
                 data = await response.json()
         except Exception as exc:

@@ -3,9 +3,11 @@ import time
 import aiosqlite
 import hashlib
 import random
+from collections import defaultdict
 from astrbot.api import logger
 
 from .cf_api import request_cf_api
+from .sync_state import replace_submission_window
 
 class Crawler:
     @staticmethod
@@ -18,68 +20,59 @@ class Crawler:
 
     @staticmethod
     async def fetch_cf_profiles(session: aiohttp.ClientSession, user_rows, db: aiosqlite.Connection, config: dict) -> int:
-        """用一次 user.info 批量刷新多个用户的 Codeforces 资料缓存。"""
+        """去重分批刷新资料；仅对坏 Handle 拆批，不放大网络故障。"""
         rows = [row for row in user_rows if row['cf_handle']]
         if not rows:
             return 0
-        handle_to_qq = {row['cf_handle'].lower(): row['qq_id'] for row in rows}
-        params = {"handles": ";".join(row['cf_handle'] for row in rows), "checkHistoricHandles": "false"}
-        method_name = "user.info"
-        api_key, api_secret = config.get("cf_api_key"), config.get("cf_api_secret")
-        if api_key and api_secret:
-            params["apiKey"] = api_key
-            params["time"] = str(int(time.time()))
-            params["apiSig"] = Crawler._generate_cf_api_sig(method_name, params, api_key, api_secret)
-        try:
-            data = await request_cf_api(session, method_name, params, timeout=20)
-            if data.get("status") != "OK":
-                logger.warning(f"批量 CF 用户资料请求失败: {data.get('comment', '未知错误')}")
-                return 0
-            now, updates = int(time.time()), []
-            for profile in data.get("result", []):
-                qq_id = handle_to_qq.get(str(profile.get("handle", "")).lower())
-                if qq_id:
-                    updates.append((profile.get("rating"), profile.get("rank"), profile.get("maxRating"), profile.get("maxRank"), now, qq_id))
-            if updates:
-                await db.executemany("""UPDATE users SET cf_rating=?, cf_rank=?, cf_max_rating=?,
-                    cf_max_rank=?, cf_rating_updated_at=? WHERE qq_id=?""", updates)
-                await db.commit()
-            return len(updates)
-        except Exception as e:
-            logger.error(f"批量刷新 CF 用户资料失败: {e}")
-            return 0
+        handle_to_qq = defaultdict(list)
+        for row in rows:
+            handle_to_qq[row['cf_handle'].lower()].append(row['qq_id'])
+
+        async def fetch_batch(handles):
+            params = {"handles": ";".join(handles), "checkHistoricHandles": "false"}
+            key, secret = config.get("cf_api_key"), config.get("cf_api_secret")
+            if key and secret:
+                params.update(apiKey=key, time=str(int(time.time())))
+                params["apiSig"] = Crawler._generate_cf_api_sig("user.info", params, key, secret)
+            try:
+                data = await request_cf_api(session, "user.info", params, timeout=20)
+            except Exception as exc:
+                logger.warning(f"CF 资料请求失败（{len(handles)} 个 Handle）: {type(exc).__name__}")
+                return []
+            if not isinstance(data, dict):
+                return []
+            if data.get("status") == "OK":
+                return data.get("result", [])
+            comment = str(data.get("comment", ""))
+            invalid_handle = "handle" in comment.lower() and any(
+                word in comment.lower() for word in ("not found", "invalid", "should contain"))
+            if invalid_handle and len(handles) > 1:
+                middle = len(handles) // 2
+                left = await fetch_batch(handles[:middle])
+                return left + await fetch_batch(handles[middle:])
+            logger.warning(f"CF 资料请求失败（{';'.join(handles)}）: {comment}")
+            return []
+
+        handles = list(handle_to_qq)
+        profiles = {}
+        for index in range(0, len(handles), 100):
+            for profile in await fetch_batch(handles[index:index+100]):
+                profiles[str(profile.get("handle", "")).lower()] = profile
+        updated = 0
+        for handle, profile in profiles.items():
+            for qq_id in handle_to_qq.get(handle, []):
+                cursor = await db.execute("""UPDATE users SET cf_rating=?,cf_rank=?,cf_max_rating=?,
+                    cf_max_rank=?,cf_rating_updated_at=? WHERE qq_id=? AND LOWER(cf_handle)=?""",
+                    (profile.get("rating"), profile.get("rank"), profile.get("maxRating"),
+                     profile.get("maxRank"), int(time.time()), qq_id, handle))
+                updated += cursor.rowcount
+        await db.commit()
+        return updated
 
     @staticmethod
     async def fetch_cf_profile(session: aiohttp.ClientSession, user_row: aiosqlite.Row, db: aiosqlite.Connection, config: dict) -> bool:
         """刷新并缓存 Codeforces 用户资料；仅在正常刷题同步时调用，避免额外高频请求。"""
-        handle = user_row['cf_handle']
-        if not handle:
-            return False
-        params = {"handles": handle, "checkHistoricHandles": "false"}
-        method_name = "user.info"
-        api_key = config.get("cf_api_key")
-        api_secret = config.get("cf_api_secret")
-        if api_key and api_secret:
-            params["apiKey"] = api_key
-            params["time"] = str(int(time.time()))
-            params["apiSig"] = Crawler._generate_cf_api_sig(method_name, params, api_key, api_secret)
-        try:
-            data = await request_cf_api(session, method_name, params, timeout=15)
-            if data.get("status") != "OK" or not data.get("result"):
-                logger.warning(f"CF 用户资料请求失败 (用户: {handle}): {data.get('comment', '无数据')}")
-                return False
-            profile = data["result"][0]
-            await db.execute(
-                """UPDATE users SET cf_rating = ?, cf_rank = ?, cf_max_rating = ?,
-                   cf_max_rank = ?, cf_rating_updated_at = ? WHERE qq_id = ?""",
-                (profile.get("rating"), profile.get("rank"), profile.get("maxRating"),
-                 profile.get("maxRank"), int(time.time()), user_row["qq_id"]),
-            )
-            await db.commit()
-            return True
-        except Exception as e:
-            logger.error(f"刷新 CF 用户资料失败 (用户: {handle}): {e}")
-            return False
+        return bool(await Crawler.fetch_cf_profiles(session, [user_row], db, config))
 
     @staticmethod
     def _submission_identity(prob: dict):
@@ -102,8 +95,7 @@ class Crawler:
         api_key, api_secret = config.get("cf_api_key"), config.get("cf_api_secret")
         method_name = "user.status"
         from_index = 1
-        candidates = []
-        processed = set()
+        candidates = {}
 
         while True:
             params = {"handle": handle, "from": str(from_index), "count": "100"}
@@ -116,59 +108,60 @@ class Crawler:
             except Exception as e:
                 logger.error(f"获取 CF 用户 {handle} 提交失败（from={from_index}）: {e}")
                 return 0, False
+            if not isinstance(data, dict):
+                return 0, False
             if data.get("status") != "OK":
                 logger.error(f"CF API 请求失败（用户: {handle}）: {data.get('comment')}")
                 return 0, False
 
-            submissions = data.get("result", [])
+            submissions = data.get("result")
+            if not isinstance(submissions, list):
+                return 0, False
             if not submissions:
                 break
             reached_start = False
             for sub in submissions:
-                if not isinstance(sub, dict):
-                    continue
-                submission_time = int(sub.get("creationTimeSeconds", 0) or 0)
+                if not isinstance(sub, dict) or not isinstance(sub.get("creationTimeSeconds"), int):
+                    return 0, False
+                submission_time = sub["creationTimeSeconds"]
                 if submission_time < start_timestamp:
                     reached_start = True
                     continue
-                if sub.get("verdict") != "OK" or not isinstance(sub.get("problem"), dict):
-                    continue
+                if not isinstance(sub.get("problem"), dict) or not isinstance(sub.get("id"), int):
+                    return 0, False
                 identity = Crawler._submission_identity(sub["problem"])
                 if not identity:
-                    continue
+                    return 0, False
                 stable_pid, problem_name, contest_id, problem_index = identity
-                if stable_pid in processed:
-                    continue
-                processed.add(stable_pid)
                 if contest_id is not None and problem_index:
                     url_part = (f"gym/{contest_id}/problem/{problem_index}" if contest_id >= 100000
                                 else f"problemset/problem/{contest_id}/{problem_index}")
                     problem_url = f"https://codeforces.com/{url_part}"
                 else:
                     problem_url = ""
-                candidates.append((qq_id, "codeforces", stable_pid, problem_name,
-                                   str(sub["problem"].get("rating", -1)), problem_url, submission_time))
+                verdict = sub.get("verdict") or "SUBMITTED"
+                pending = verdict in {"SUBMITTED", "TESTING"} or sub.get("testset") in {"PRETESTS", "SAMPLES"}
+                candidates[str(sub["id"])] = (qq_id, str(sub["id"]), stable_pid, problem_name,
+                    str(sub["problem"].get("rating", -1)), problem_url, submission_time, verdict, int(pending))
             if reached_start or len(submissions) < 100:
                 break
             from_index += 100
 
-        async with db.execute("SELECT cf_handle FROM users WHERE qq_id = ?", (qq_id,)) as cursor:
-            current_user = await cursor.fetchone()
-        current_handle = current_user["cf_handle"] if current_user else None
-        if not current_handle or str(current_handle).lower() != str(handle).lower():
-            logger.warning(f"用户 {qq_id} 的 CF Handle 在同步期间发生变化，丢弃本轮旧数据。")
-            return 0, False
-
-        before = db.total_changes
-        if candidates:
-            await db.executemany(
-                """INSERT OR IGNORE INTO submissions
-                   (user_qq_id, platform, problem_id, problem_name, problem_rating, problem_url, submit_time)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                candidates,
-            )
+        try:
+            await db.execute("BEGIN IMMEDIATE")
+            async with db.execute("SELECT cf_handle FROM users WHERE qq_id = ?", (qq_id,)) as cursor:
+                current_user = await cursor.fetchone()
+            current_handle = current_user["cf_handle"] if current_user else None
+            if not current_handle or str(current_handle).lower() != str(handle).lower():
+                logger.warning(f"用户 {qq_id} 的 CF Handle 在同步期间发生变化，丢弃本轮旧数据。")
+                await db.rollback()
+                return 0, False
+            added = await replace_submission_window(db, qq_id, start_timestamp, list(candidates.values()))
             await db.commit()
-        return db.total_changes - before, True
+            return added, True
+        except BaseException:
+            await db.rollback()
+            raise
 
     @staticmethod
     async def fetch_cf_submissions_paginated(session: aiohttp.ClientSession, user_row: aiosqlite.Row,

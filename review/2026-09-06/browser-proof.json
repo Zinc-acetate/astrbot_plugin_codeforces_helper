@@ -1,0 +1,11 @@
+{
+  "scope": "Localhost-only disposable database; fictional member; original public/index.html",
+  "page": "http://127.0.0.1:18788/",
+  "member_write_http_status": 200,
+  "injected_attribute": "onmouseover",
+  "attribute_value": "document.getElementById('rating-result').textContent='LOCAL_REVIEW_PROOF'",
+  "trigger": "Mouse moved over the rendered handle link using browser developer input",
+  "observed_visible_text": "LOCAL_REVIEW_PROOF",
+  "external_navigation_or_data_transmission": false,
+  "fixture_server_and_tab_closed": true
+}

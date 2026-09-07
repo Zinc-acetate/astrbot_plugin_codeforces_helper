@@ -53,7 +53,7 @@ class FakeSession:
         self.responses = iter(responses)
         self.urls = []
 
-    def get(self, url, timeout):
+    def get(self, url, timeout, headers=None):
         self.urls.append((url, timeout))
         return FakeResponse(next(self.responses))
 
@@ -65,6 +65,16 @@ class FakeHttpError(Exception):
 
 
 class CodeforcesApiTests(unittest.IsolatedAsyncioTestCase):
+    async def test_http_400_preserves_cf_error_for_bad_handle_isolation(self):
+        response = FakeResponse({"status":"FAILED", "comment":"handles: User with handle missing not found"})
+        response.status = 400
+        class Session:
+            def get(self, *args, **kwargs):
+                return response
+        result = await request_cf_api(Session(), "user.info", limiter=FakeLimiter())
+        self.assertEqual(result["status"], "FAILED")
+        self.assertIn("not found", result["comment"])
+
     def test_production_interval_exceeds_official_minimum(self):
         self.assertGreater(CODEFORCES_API_RATE_LIMITER.min_interval, 2.0)
 

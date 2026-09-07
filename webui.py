@@ -12,6 +12,14 @@ from .core.rate_limit import configure_codeforces_api_rate_limiter
 app = Quart(__name__, static_folder='public', template_folder='public')
 app.register_blueprint(api, url_prefix="/api")
 
+@app.after_request
+async def prevent_stale_console(response):
+    # Console code and authenticated JSON must not outlive a plugin update/session.
+    if response.mimetype in {"text/html", "application/json"}:
+        response.headers["Cache-Control"] = "no-store"
+        response.headers.pop("Expires", None)
+    return response
+
 @app.route('/')
 async def index():
     public_dir = Path(__file__).parent / 'public'

@@ -1,0 +1,56 @@
+{
+  "checked_at": "2026-09-06T16:38:13.900854+00:00",
+  "base_commit": "20a6c172a0e7d6ca29d44c357ddd1835761d8f6c",
+  "environment": {
+    "platform": "win32",
+    "python": "3.10.10",
+    "sqlite": "3.39.4",
+    "packages": {
+      "aiohttp": "3.14.1",
+      "aiosqlite": "0.22.1",
+      "quart": "0.20.0",
+      "APScheduler": "3.11.3",
+      "Pillow": "12.0.0"
+    }
+  },
+  "automated_tests": {
+    "run": 71,
+    "duration_seconds": 12.397,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0
+  },
+  "javascript_syntax_scripts": 2,
+  "python_compileall": true,
+  "git_diff_check": true,
+  "browser": {
+    "injected_attributes": 0,
+    "injection_marker": "",
+    "normal_member_save": true,
+    "member_rows_after_save": 2,
+    "invalid_handle_rejected": true,
+    "legacy_attribute_text_escaped": true
+  },
+  "live_api": {
+    "checked_at": "2026-09-06T16:29:43.061710+00:00",
+    "updated_members": 1,
+    "api_requests": 3,
+    "valid_member_updated": true
+  },
+  "limitations": [
+    "No installed AstrBot/QQ OneBot integration environment",
+    "No Linux runtime available on this host"
+  ],
+  "source_sha256": {
+    "backend/api.py": "224826021d7fc7f772e147e410b2d914bc0bef436ee6b30b0872c7cbaad25aaf",
+    "core/cf_api.py": "b41411f6d2f198c78ba3c89c109b63b3488789ef74e03a5697ea781d0095cff3",
+    "core/contest_reminder.py": "c40996a317036575fe8deb5161965e5e6d3f061d95e3d6a15ab153ec3f15b5fb",
+    "core/crawler.py": "aff57bedb967196b7ccbdd6fc2ea43933f0db19d786e04d9292c489707299192",
+    "core/rate_limit.py": "94b2518355e7839d2f9f0a2bf06d67d3d42b393dbddcfe7528dcd5c17bfd26e6",
+    "core/sync_lock.py": "25a1dc3ffd8b5be2cc80345c5b54eb4cef10acef4f40341b0d17420841091f42",
+    "core/sync_state.py": "ed46ffc9f79bde9891349989883d9bd212cc060e2f2f3dad8ade805405d5bd59",
+    "main.py": "49d4341ab5f18a4ee75cb6f6ab575d33e15852d1d7eadf4d7595c6433e99124a",
+    "public/index.html": "1a5e6f4b27014cd3bdefe4f2baa4041847fe4be0f03d5346d055343e961ea91f",
+    "webui.py": "dce6a90f4e88b109792fa4d2d86c9f6b99a6c13d02300e391682f84f912b39df"
+  }
+}

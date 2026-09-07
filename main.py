@@ -6,6 +6,7 @@ import json
 import time
 import os
 import sqlite3
+import secrets
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -46,6 +47,10 @@ from .core.contest_reminder import (
 )
 from .core.rate_limit import configure_codeforces_api_rate_limiter
 from .core.sync_lock import acquire_sync_lock, SyncAlreadyRunning
+from .core.sync_state import (
+    initialize_sync_state, plan_sync, finish_sync, delete_member_records,
+    ensure_report_group, pending_report, acknowledge_report,
+)
 
 
 SHANGHAI_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
@@ -162,6 +167,7 @@ class CodeforcesHelperPlugin(Star):
         await self.db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('hourly_report_limit', '10');")
         await self.db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('sync_interval_minutes', '60');")
         await self.db.execute("INSERT OR IGNORE INTO settings (key, value) VALUES ('admin_password_hash', ?);", (generate_password_hash('123456'),))
+        await self.db.execute("INSERT OR IGNORE INTO settings(key,value) VALUES('admin_session_version',?)", (secrets.token_hex(16),))
         await self.db.execute("CREATE TABLE IF NOT EXISTS users (qq_id TEXT PRIMARY KEY, name TEXT NOT NULL, cf_handle TEXT, status TEXT, school TEXT, last_sync_timestamp INTEGER DEFAULT 0);")
         await self.db.execute("CREATE TABLE IF NOT EXISTS submissions (id INTEGER PRIMARY KEY AUTOINCREMENT, user_qq_id TEXT NOT NULL, platform TEXT NOT NULL, problem_id TEXT NOT NULL, problem_name TEXT, problem_rating TEXT, problem_url TEXT, submit_time INTEGER NOT NULL, UNIQUE(user_qq_id, platform, problem_id));")
         async with self.db.execute("PRAGMA table_info(users)") as cursor:
@@ -169,12 +175,15 @@ class CodeforcesHelperPlugin(Star):
         migrations = {
             'cf_rating': 'INTEGER', 'cf_rank': 'TEXT', 'cf_max_rating': 'INTEGER',
             'cf_max_rank': 'TEXT', 'cf_rating_updated_at': 'INTEGER DEFAULT 0',
-            'history_sync_days': 'INTEGER DEFAULT 0'
+            'history_sync_days': 'INTEGER DEFAULT 0',
+            'cf_reconciled_at': 'INTEGER DEFAULT 0',
+            'cf_coverage_start': 'INTEGER DEFAULT 0',
         }
         for column, sql_type in migrations.items():
             if column not in columns:
                 await self.db.execute(f"ALTER TABLE users ADD COLUMN {column} {sql_type}")
         await self.db.execute("DELETE FROM submissions WHERE platform != 'codeforces'")
+        await initialize_sync_state(self.db)
         await self.db.commit()
 
     async def get_setting(self, key, default=None):
@@ -197,6 +206,7 @@ class CodeforcesHelperPlugin(Star):
         cron_hour = settings.get('report_cron_hour', '*'); cron_minute = settings.get('report_cron_minute', '0')
         if is_enabled and group_id:
             try:
+                await ensure_report_group(self.db, group_id, int(time.time()))
                 trigger = CronTrigger(hour=cron_hour, minute=cron_minute, timezone="Asia/Shanghai")
                 self.scheduler.add_job(self.report_hourly_solves, trigger, id=report_job_id, name="Hourly Report")
                 logger.info(f"✅ 定时播报任务已更新。群号: {group_id}, CRON: [hour={cron_hour}, minute={cron_minute}]")
@@ -445,43 +455,25 @@ class CodeforcesHelperPlugin(Star):
         return "\n".join(parts)
 
     async def sync_single_user(self, qq_id: str, refresh_cf_profile: bool = True, days: int = None):
-        async with self.db.execute("SELECT * FROM users WHERE qq_id = ?", (qq_id,)) as cursor:
-            user = await cursor.fetchone()
-        if not user or not user["cf_handle"]:
-            return 0, False
-        now = int(time.time())
-        history_days = int(user["history_sync_days"] or 0)
-        if days is not None:
-            requested_days = max(1, min(int(days), 3650))
-            start_timestamp = now - requested_days * 86400
-            sync_type = f"{requested_days}天深度"
-        elif history_days < 30:
-            requested_days = 30
-            start_timestamp = now - 30 * 86400
-            sync_type = "30日补全"
-        else:
-            requested_days = history_days
-            start_timestamp = int(user["last_sync_timestamp"] or now - 30 * 86400)
-            sync_type = "增量"
-        logger.info(f"  -> 为用户 {user['name']} 执行 [{sync_type}] 同步...")
-        async with aiohttp.ClientSession() as session:
-            added, complete = await Crawler.fetch_cf_submissions(
-                session, user, start_timestamp, self.db, self.config
-            )
-            if refresh_cf_profile:
-                await Crawler.fetch_cf_profile(session, user, self.db, self.config)
-        if complete:
-            new_history_days = max(history_days, requested_days)
-            await self.db.execute(
-                "UPDATE users SET last_sync_timestamp=?, history_sync_days=? WHERE qq_id=?",
-                (now, new_history_days, user["qq_id"]),
-            )
-            await self.db.commit()
-            if added:
-                logger.info(f"    为用户 {user['name']} 同步了 {added} 条新记录。")
-        else:
-            logger.warning(f"用户 {user['name']} 同步未完整完成，不推进同步时间。")
-        return added, complete
+        # A dedicated connection keeps the snapshot transaction separate from chat settings.
+        async with aiosqlite.connect(self.db_path, timeout=30) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute("SELECT * FROM users WHERE qq_id = ?", (qq_id,)) as cursor:
+                user = await cursor.fetchone()
+            if not user or not user["cf_handle"]:
+                return 0, False
+            now = int(time.time())
+            plan = await plan_sync(db, user, now, days)
+            logger.info(f"为用户 {user['name']} 同步 CF 提交（起点 {plan.start}）...")
+            async with aiohttp.ClientSession() as session:
+                added, complete = await Crawler.fetch_cf_submissions(session, user, plan.start, db, self.config)
+                if complete:
+                    await finish_sync(db, user, now, plan)
+                else:
+                    logger.warning(f"用户 {user['name']} 同步未完整完成，不推进同步时间。")
+                if refresh_cf_profile:
+                    await Crawler.fetch_cf_profile(session, user, db, self.config)
+            return added, complete
 
     async def sync_all_users_data(self):
         logger.info(f"[智能同步] 开始执行 {time.strftime('%H:%M')} 周期的同步任务...")
@@ -495,8 +487,8 @@ class CodeforcesHelperPlugin(Star):
                     await self.sync_single_user(user_row["qq_id"], refresh_cf_profile=False)
                 async with self.db.execute("SELECT * FROM users WHERE cf_handle IS NOT NULL AND TRIM(cf_handle) != ''") as cursor:
                     cf_users = await cursor.fetchall()
-                async with aiohttp.ClientSession() as session:
-                    refreshed = await Crawler.fetch_cf_profiles(session, cf_users, self.db, self.config)
+                async with aiohttp.ClientSession() as session, aiosqlite.connect(self.db_path, timeout=30) as db:
+                    refreshed = await Crawler.fetch_cf_profiles(session, cf_users, db, self.config)
                 logger.info(f"[智能同步] 批量刷新了 {refreshed} 位用户的 CF 分数资料。")
         except SyncAlreadyRunning:
             logger.info("[智能同步] 已有手动或自动更新任务，跳过本轮。")
@@ -504,18 +496,34 @@ class CodeforcesHelperPlugin(Star):
         logger.info("[智能同步] 本次周期任务完成。")
 
     async def report_hourly_solves(self):
-        message_to_send = await self._generate_hourly_report_message(hours=1)
-        if "没有新的过题记录" in message_to_send: logger.info("[小时榜] 无新记录。"); return
         group_id = await self.get_setting("notification_group_id")
-        if not group_id: logger.warning("[小时榜] 无法发送，未配置群号。"); return
+        if not group_id or await self.get_setting("report_enabled") != "true":
+            return
         try:
-            qq_platform = self.context.get_platform("aiocqhttp")
-            if not qq_platform: logger.error("[小时榜] 无法获取 QQ 平台实例。"); return
-            bot = qq_platform.bot
-            onebot_message = [{"type": "text", "data": {"text": message_to_send}}]
-            await bot.send_group_msg(group_id=int(group_id), message=onebot_message)
-            logger.info(f"[小时榜] 已成功向群 {group_id} 发送播报。")
-        except Exception as e: logger.error(f"发送小时榜通知失败: {e}", exc_info=True)
+            # Keep membership changes and concurrent reporters out until acknowledgement.
+            with acquire_sync_lock(self.db_path):
+                async with aiosqlite.connect(self.db_path, timeout=30) as db:
+                    db.row_factory = aiosqlite.Row
+                    limit = max(1, min(int(await self.get_setting('hourly_report_limit', 10)), 50))
+                    records = await pending_report(db, group_id, int(time.time()), limit)
+                    if not records:
+                        return
+                    platform = self.context.get_platform("aiocqhttp")
+                    if not platform:
+                        logger.warning("过题播报暂未发送：QQ 平台不可用，将在下次重试。")
+                        return
+                    parts = [f"📖 新增过题速报（{len(records)} 条，含延迟同步记录）"]
+                    for row in records:
+                        stamp = datetime.fromtimestamp(row['submit_time'], SHANGHAI_TZ).strftime('%m-%d %H:%M')
+                        parts.append(f"\n👤 {row['user_name']} [{stamp}]\n{row['problem_name']} (Rating: {row['problem_rating']})\n{row['problem_url']}")
+                    await asyncio.wait_for(platform.bot.send_group_msg(
+                        group_id=int(group_id), message=[{"type":"text", "data":{"text":"\n".join(parts)}}]), timeout=30)
+                    await acknowledge_report(db, group_id, records, int(time.time()))
+                    logger.info(f"已向群 {group_id} 播报 {len(records)} 条新过题记录。")
+        except SyncAlreadyRunning:
+            logger.info("过题播报等待数据更新完成，未发送记录保留到下次。")
+        except Exception as e:
+            logger.error(f"过题播报失败，保留待发记录: {e}", exc_info=True)
 
     async def sync_single_user_for_days(self, qq_id: str, days: int):
         return await self.sync_single_user(qq_id, refresh_cf_profile=True, days=days)
@@ -851,7 +859,9 @@ class CodeforcesHelperPlugin(Star):
             with acquire_sync_lock(self.db_path):
                 async with self.db.execute("SELECT name FROM users WHERE qq_id = ?", (qq_id,)) as cursor: user = await cursor.fetchone()
                 if user:
-                    await self.db.execute("DELETE FROM submissions WHERE user_qq_id = ?", (qq_id,)); await self.db.execute("DELETE FROM users WHERE qq_id = ?", (qq_id,)); await self.db.commit()
+                    await delete_member_records(self.db, qq_id)
+                    await self.db.execute("DELETE FROM users WHERE qq_id = ?", (qq_id,))
+                    await self.db.commit()
         except SyncAlreadyRunning as e:
             yield event.plain_result(f"❌ {e}，暂时无法删除成员。")
             return

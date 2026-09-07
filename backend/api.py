@@ -1,5 +1,8 @@
 import asyncio
 import time
+import re
+import secrets
+from functools import wraps
 
 import aiohttp
 import aiosqlite
@@ -8,6 +11,7 @@ from werkzeug.security import check_password_hash, generate_password_hash
 
 from ..core.crawler import Crawler
 from ..core.sync_lock import acquire_sync_lock, SyncAlreadyRunning
+from ..core.sync_state import plan_sync, finish_sync, delete_member_records
 from astrbot.api import logger
 
 api = Blueprint("api", __name__)
@@ -25,12 +29,26 @@ async def get_db():
 
 
 def admin_required(func):
+    @wraps(func)
     async def wrapper(*args, **kwargs):
-        if not session.get("acm_admin"):
+        if not await authenticated_admin():
             return jsonify({"success": False, "message": "请先登录管理后台"}), 401
         return await func(*args, **kwargs)
-    wrapper.__name__ = func.__name__
     return wrapper
+
+
+async def authenticated_admin():
+    if not session.get("acm_admin") or not session.get("admin_session_version"):
+        return False
+    db = await get_db()
+    try:
+        version = await read_setting(db, "admin_session_version")
+        valid = bool(version) and secrets.compare_digest(str(version), str(session.get("admin_session_version")))
+        if not valid:
+            session.clear()
+        return valid
+    finally:
+        await db.close()
 
 
 async def read_setting(db, key, default=None):
@@ -66,31 +84,21 @@ async def sync_users(qq_ids=None, days=None):
                     for user in users:
                         if not user["cf_handle"]:
                             continue
-                        history_days = int(user["history_sync_days"] or 0)
-                        if days is not None:
-                            requested_days = days
-                            start = now - days * 86400
-                        elif history_days < 30:
-                            requested_days = 30
-                            start = now - 30 * 86400
-                        else:
-                            requested_days = history_days
-                            start = int(user["last_sync_timestamp"] or now - 30 * 86400)
+                        plan = await plan_sync(db, user, now, days)
                         added, complete = await Crawler.fetch_cf_submissions(
-                            http, user, start, db, config
+                            http, user, plan.start, db, config
                         )
                         total_added += added
                         if complete:
-                            await db.execute(
-                                "UPDATE users SET last_sync_timestamp=?, history_sync_days=? WHERE qq_id=?",
-                                (now, max(history_days, requested_days), user["qq_id"]),
-                            )
+                            await finish_sync(db, user, now, plan)
                         else:
                             failed += 1
                     await db.commit()
                     profiles = await Crawler.fetch_cf_profiles(http, users, db, config)
+                expected_profiles = sum(bool(user["cf_handle"]) for user in users)
                 return {"users": len(users), "submissions": total_added,
-                        "profiles": profiles, "failed": failed}
+                        "profiles": profiles, "failed": failed,
+                        "profile_failed": max(0, expected_profiles-profiles)}
         finally:
             await db.close()
 
@@ -168,11 +176,16 @@ async def admin_login():
     password = str(data.get("password", ""))
     db = await get_db()
     try:
-        password_hash = await read_setting(db, "admin_password_hash")
+        # Read both values from one snapshot: an old password must never receive
+        # a new session version during a concurrent password change.
+        async with db.execute("SELECT key,value FROM settings WHERE key IN ('admin_password_hash','admin_session_version')") as cursor:
+            auth = {row["key"]: row["value"] for row in await cursor.fetchall()}
+        password_hash = auth.get("admin_password_hash")
         if not password_hash or not check_password_hash(password_hash, password):
             return jsonify({"success": False, "message": "密码错误"}), 401
         session.clear()
         session["acm_admin"] = True
+        session["admin_session_version"] = auth.get("admin_session_version")
         session.permanent = True
         return jsonify({"success": True, "message": "登录成功"})
     finally:
@@ -188,7 +201,7 @@ async def admin_logout():
 
 @api.route("/admin/session", methods=["GET"])
 async def admin_session():
-    return jsonify({"authenticated": bool(session.get("acm_admin"))})
+    return jsonify({"authenticated": await authenticated_admin()})
 
 
 @api.route("/admin/settings", methods=["GET", "PUT"])
@@ -223,11 +236,15 @@ async def admin_password():
         return jsonify({"success": False, "message": "新密码至少6位"}), 400
     db = await get_db()
     try:
+        await db.execute("BEGIN IMMEDIATE")
         current_hash = await read_setting(db, "admin_password_hash")
         if not current_hash or not check_password_hash(current_hash, old_password):
             return jsonify({"success": False, "message": "原密码错误"}), 400
         await write_setting(db, "admin_password_hash", generate_password_hash(new_password))
+        version = secrets.token_hex(16)
+        await write_setting(db, "admin_session_version", version)
         await db.commit()
+        session["admin_session_version"] = version
         return jsonify({"success": True, "message": "密码已修改"})
     finally:
         await db.close()
@@ -248,11 +265,16 @@ async def admin_users():
                 return jsonify({"success": False, "message": "成员列表不能为空"}), 400
             values = []
             for item in users:
+                if not isinstance(item, dict):
+                    return jsonify({"success": False, "message": "成员资料必须为对象"}), 400
                 qq_id = str(item.get("qq_id", "")).strip()
                 name = str(item.get("name", "")).strip()
                 if not qq_id.isdigit() or not name:
                     return jsonify({"success": False, "message": "每位成员都必须提供数字QQ号和姓名"}), 400
-                values.append((qq_id, name, str(item.get("cf_handle", "")).strip() or None,
+                handle = str(item.get("cf_handle") or "").strip()
+                if handle and not re.fullmatch(r"[A-Za-z0-9_.-]{3,24}", handle):
+                    return jsonify({"success": False, "message": f"{name} 的 CF Handle 格式无效"}), 400
+                values.append((qq_id, name, handle or None,
                                str(item.get("status", "")).strip() or None,
                                str(item.get("school", "")).strip() or None))
             with acquire_sync_lock(current_app.config["DB_PATH"]):
@@ -262,7 +284,9 @@ async def admin_users():
                         existing = await cursor.fetchone()
                     handle_changed = bool(existing and (existing["cf_handle"] or "").lower() != (cf_handle or "").lower())
                     if handle_changed:
-                        await db.execute("DELETE FROM submissions WHERE user_qq_id=?", (qq_id,))
+                        await delete_member_records(db, qq_id)
+                        await db.execute("""UPDATE users SET cf_rating=NULL,cf_rank=NULL,cf_max_rating=NULL,
+                            cf_max_rank=NULL,cf_rating_updated_at=0,cf_reconciled_at=0,cf_coverage_start=0 WHERE qq_id=?""", (qq_id,))
                     await db.execute(
                         """INSERT INTO users (qq_id,name,cf_handle,status,school,last_sync_timestamp,history_sync_days)
                            VALUES (?,?,?,?,?,0,0) ON CONFLICT(qq_id) DO UPDATE SET
@@ -279,7 +303,8 @@ async def admin_users():
             return jsonify({"success": False, "message": "请选择要删除的成员"}), 400
         placeholders = ",".join("?" for _ in qq_ids)
         with acquire_sync_lock(current_app.config["DB_PATH"]):
-            await db.execute(f"DELETE FROM submissions WHERE user_qq_id IN ({placeholders})", qq_ids)
+            for qq_id in qq_ids:
+                await delete_member_records(db, qq_id)
             cursor = await db.execute(f"DELETE FROM users WHERE qq_id IN ({placeholders})", qq_ids)
             await db.commit()
         return jsonify({"success": True, "message": f"已删除 {cursor.rowcount} 位成员及其过题记录"})
@@ -309,7 +334,9 @@ async def admin_sync():
             return jsonify({"success": False, "message": "同步天数必须是整数"}), 400
     try:
         result = await sync_users(qq_ids=qq_ids, days=days)
-        return jsonify({"success": True, "message": "数据更新完成", "result": result})
+        profile_failed = result.get("profile_failed", 0)
+        message = f"更新结束：新增 {result['submissions']} 题，提交同步失败 {result['failed']} 人，Rating 更新失败 {profile_failed} 人"
+        return jsonify({"success": True, "message": message, "result": result})
     except SyncAlreadyRunning as e:
         return jsonify({"success": False, "message": str(e)}), 409
     except Exception as e:
