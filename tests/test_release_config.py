@@ -52,13 +52,15 @@ class ReleaseMetadataTests(unittest.TestCase):
             and isinstance(decorator.func, ast.Name)
             and decorator.func.id == "register"
         )
-        self.assertEqual(register_call.args[-1].value, "1.3.1")
-        self.assertIn("Codeforces Helper v1.3.1", main_source)
-        self.assertIn("当前版本：`1.3.1`", readme)
-        self.assertRegex(metadata, r"(?m)^version: 1\.3\.1$")
+        self.assertEqual(register_call.args[-1].value, "1.3.2")
+        self.assertIn("Codeforces Helper v1.3.2", main_source)
+        self.assertIn("当前版本：`1.3.2`", readme)
+        self.assertRegex(metadata, r"(?m)^version: 1\.3\.2$")
 
     def test_changelog_has_requested_entry(self):
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn("## 1.3.2", changelog)
+        self.assertIn("修复判题延迟漏记", changelog)
         self.assertIn("## 1.3.1", changelog)
         self.assertIn("添加 CF 比赛订阅提醒（测试）", changelog)
         self.assertIn("优化管理后台启动逻辑，支持随插件重载自动恢复", changelog)

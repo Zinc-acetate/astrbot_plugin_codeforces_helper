@@ -73,7 +73,7 @@ CONTEST_FILTER_SWITCHES = (
     "astrbot_plugin_codeforces_helper",
     "Zinc-acetate",
     "Codeforces 训练、Rating 缓存、比赛提醒与管理助手",
-    "1.3.1",
+    "1.3.2",
 )
 class CodeforcesHelperPlugin(Star):
     db: aiosqlite.Connection
@@ -87,7 +87,7 @@ class CodeforcesHelperPlugin(Star):
         self.FONT_PATH = Path(__file__).parent / "resources" / "SourceHanSansSC-Bold.otf"
 
     async def initialize(self):
-        logger.info("Codeforces Helper v1.3.1 开始初始化...")
+        logger.info("Codeforces Helper v1.3.2 开始初始化...")
         await self.connect_db()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         settings = await self._get_all_settings()
