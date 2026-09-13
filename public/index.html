@@ -41,19 +41,48 @@ html[data-theme="dark"]{--bg:#090d16;--bg-orb:#172554;--panel:rgba(17,24,39,.86)
 <section class="admin-panel"><h3>批量成员资料</h3><label for="batch-users">每行一位成员</label><textarea id="batch-users" placeholder="QQ号,姓名,CF Handle,身份,学校&#10;后三项可留空"></textarea><button id="batch-save" class="btn small" type="button">保存成员资料</button></section>
 </div><section class="admin-panel admin-users"><div class="modal-head"><div><h3>成员目录</h3><p class="helper">选择成员后可执行同步或删除操作</p></div><button id="delete-selected" class="btn danger small" type="button">删除选中成员</button></div><div class="table-frame"><table><thead><tr><th>选择</th><th>QQ</th><th>姓名</th><th>Handle</th><th>当前 Rating</th><th>身份</th><th>学校</th></tr></thead><tbody id="admin-users"></tbody></table></div></section></div></div>
 <script>
-const $=id=>document.getElementById(id);let all=[];
+const $=id=>document.getElementById(id);let all=[];let boardRequestId=0;
 const boardMeta={solved_7:{title:'近 7 日训练排名',total:'近 7 日通过',king:'近 7 日领先者'},solved_30:{title:'近 30 日训练排名',total:'近 30 日通过',king:'近 30 日领先者'},current_rating:{title:'Codeforces 当前 Rating',total:'近 7 日通过',king:'当前 Rating 第一'},max_rating:{title:'Codeforces 历史最高 Rating',total:'近 7 日通过',king:'历史 Rating 第一'}};
 function syncThemeUI(){const dark=document.documentElement.dataset.theme==='dark';$('theme-label').textContent=dark?'日间模式':'夜间模式';document.querySelector('meta[name="theme-color"]').content=dark?'#090d16':'#f4f7fb'}
 $('theme-toggle').onclick=()=>{const next=document.documentElement.dataset.theme==='dark'?'light':'dark';document.documentElement.dataset.theme=next;localStorage.setItem('cf-helper-theme',next);syncThemeUI()};
 async function jsonFetch(url,opt={}){const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opt});let d={};try{d=await r.json()}catch{}if(!r.ok)throw new Error(d.message||`请求失败 ${r.status}`);return d}
-function fmtTime(ts){return ts?new Date(ts*1000).toLocaleString('zh-CN',{hour12:false}):'尚未更新'}
+function fmtTime(ts){return ts?new Date(ts*1000).toLocaleString('zh-CN',{hour12:false,timeZone:'Asia/Shanghai'}):'尚未更新'}
 function esc(v){return String(v??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]))}
 function cfColor(rating){if(rating==null)return '#808080';if(rating<1200)return '#808080';if(rating<1400)return '#008000';if(rating<1600)return '#03a89e';if(rating<1900)return '#3b82f6';if(rating<2100)return '#aa00aa';if(rating<2400)return '#ff8c00';return '#ef4444'}
 function cfText(value,rating,fallback='-'){const text=value==null||value===''?fallback:String(value);if(rating!=null&&Number(rating)>=3000&&text.length)return `<span class="cf-rating"><span class="cf-legendary-first">${esc(text[0])}</span><span class="cf-legendary-rest">${esc(text.slice(1))}</span></span>`;return `<span class="cf-rating" style="color:${cfColor(rating)}">${esc(text)}</span>`}
 function cfHandle(handle,rating,fallback='-'){if(handle==null||handle==='')return esc(fallback);const value=String(handle);return `<a class="cf-handle" href="https://codeforces.com/profile/${encodeURIComponent(value)}" target="_blank" rel="noopener noreferrer" title="打开 ${esc(value)} 的 Codeforces 主页">${cfText(value,rating)}</a>`}
 function filteredBoard(){const q=$('search').value.trim().toLowerCase();return q?all.filter(u=>(u.name||'').toLowerCase().includes(q)||(u.cf_handle||'').toLowerCase().includes(q)):all}
 function renderBoard(data){$('leaderboard').innerHTML=data.map((u,i)=>`<tr><td><span class="rank ${i<3?'top':''}">${i+1}</span></td><td><span class="user-name">${esc(u.name)}</span></td><td>${cfHandle(u.cf_handle,u.cf_rating)}</td><td title="缓存时间：${esc(fmtTime(u.cf_rating_updated_at))}">${cfText(u.cf_rating,u.cf_rating,'未定级')}</td><td>${cfText(u.cf_max_rating,u.cf_max_rating)}</td><td><span class="count-pill">${Number(u.cf_count)||0}</span></td><td>${esc(u.status||'-')}</td><td>${esc(u.school||'-')}</td></tr>`).join('')||'<tr><td class="empty" colspan="8">暂无符合条件的成员</td></tr>'}
-async function loadBoard(){const mode=$('board-mode').value;const meta=boardMeta[mode]||boardMeta.solved_7;$('board-title').textContent=meta.title;$('total-label').textContent=meta.total;$('king-label').textContent=meta.king;try{all=await jsonFetch('/api/leaderboard?mode='+encodeURIComponent(mode));renderBoard(filteredBoard());$('total-users').textContent=all.length;$('total-solved').textContent=all.reduce((s,u)=>s+Number(u.total_count||0),0);const top=all[0];const ranked=mode==='current_rating'?top&&top.cf_rating!=null:mode==='max_rating'?top&&top.cf_max_rating!=null:top&&top.total_count>0;$('king').textContent=ranked?top.name:'-';$('rated-users').textContent=all.filter(u=>u.cf_rating!=null).length;$('rating-result').classList.remove('danger')}catch(e){all=[];renderBoard([]);showNotice('rating-result','排行榜加载失败：'+e.message,true)}}
+async function loadBoard(){
+    const requestId=++boardRequestId;
+    const mode=$('board-mode').value;
+    const meta=boardMeta[mode]||boardMeta.solved_7;
+    $('board-title').textContent=meta.title;
+    $('total-label').textContent=meta.total;
+    $('king-label').textContent=meta.king;
+    try{
+        const data=await jsonFetch('/api/leaderboard?mode='+encodeURIComponent(mode));
+        if(requestId!==boardRequestId)return;
+        all=data;
+        renderBoard(filteredBoard());
+        $('total-users').textContent=all.length;
+        $('total-solved').textContent=all.reduce((s,u)=>s+Number(u.total_count||0),0);
+        const top=all[0];
+        const ranked=mode==='current_rating'?top&&top.cf_rating!=null:mode==='max_rating'?top&&top.cf_max_rating!=null:top&&top.total_count>0;
+        $('king').textContent=ranked?top.name:'-';
+        $('rated-users').textContent=all.filter(u=>u.cf_rating!=null).length;
+        $('rating-result').classList.remove('danger');
+    }catch(e){
+        if(requestId!==boardRequestId)return;
+        all=[];
+        renderBoard([]);
+        $('total-users').textContent=0;
+        $('total-solved').textContent=0;
+        $('king').textContent='-';
+        $('rated-users').textContent=0;
+        showNotice('rating-result','排行榜加载失败：'+e.message,true);
+    }
+}
 function showNotice(id,text,bad=false){const el=$(id);el.textContent=text;el.classList.toggle('danger',bad)}
 $('search').oninput=()=>renderBoard(filteredBoard());$('refresh').onclick=loadBoard;$('board-mode').onchange=loadBoard;
 $('rating-query').onclick=async()=>{try{const handle=$('rating-handle').value.trim();if(!handle)throw new Error('请输入 Codeforces Handle');const d=await jsonFetch('/api/cf-rating?handle='+encodeURIComponent(handle));const x=d.data;$('rating-result').classList.remove('danger');$('rating-result').innerHTML=`${esc(x.name)} / ${cfHandle(x.cf_handle,x.cf_rating)}　当前 ${cfText(x.cf_rating,x.cf_rating,'未定级')}（${esc(x.cf_rank||'-')}）　最高 ${cfText(x.cf_max_rating,x.cf_max_rating)}（${esc(x.cf_max_rank||'-')}）　缓存于 ${esc(fmtTime(x.cf_rating_updated_at))}`}catch(e){showNotice('rating-result',e.message,true)}};

@@ -1,6 +1,7 @@
 import asyncio
 import sqlite3
 import types
+from contextlib import closing
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -142,7 +143,7 @@ class MemberRegressionTests(PluginTestCase):
         real_check = api.check_password_hash
         def check_then_rotate(password_hash, password):
             valid = real_check(password_hash, password)
-            with sqlite3.connect(self.plugin.db_path) as db:
+            with closing(sqlite3.connect(self.plugin.db_path)) as db, db:
                 db.execute("UPDATE settings SET value='rotated-version' WHERE key='admin_session_version'")
             return valid
         with patch.object(api, "check_password_hash", check_then_rotate):
@@ -346,7 +347,7 @@ class MigrationRegressionTests(PluginTestCase):
     async def create_old_database(self):
         await self.plugin.db.close()
         path = Path(self.temporary.name) / "old-schema.db"
-        with sqlite3.connect(path) as db:
+        with closing(sqlite3.connect(path)) as db, db:
             db.executescript("""CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT);
                 CREATE TABLE users(qq_id TEXT PRIMARY KEY,name TEXT NOT NULL,cf_handle TEXT,
                     status TEXT,school TEXT,last_sync_timestamp INTEGER DEFAULT 0);

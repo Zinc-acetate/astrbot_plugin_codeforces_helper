@@ -1,0 +1,112 @@
+{
+  "checked_at": "2026-09-13T07:24:48.208422+00:00",
+  "version": "1.3.3",
+  "base_commit": "7fe40f2b6afddcef33e394139aaeb124ded89a45",
+  "environment": {
+    "os": "Windows-11-10.0.22631-SP0",
+    "python": "3.14.6",
+    "node": "v24.19.0",
+    "packages": {
+      "aiohttp": "3.14.3",
+      "aiosqlite": "0.22.1",
+      "Quart": "0.23.1",
+      "APScheduler": "3.11.3",
+      "Pillow": "12.3.0"
+    }
+  },
+  "red_baseline": {
+    "commit": "7fe40f2b6afddcef33e394139aaeb124ded89a45",
+    "python_new_tests": 12,
+    "python_failures": 10,
+    "frontend_tests": 5,
+    "frontend_failures": 5
+  },
+  "checks": {
+    "python": {
+      "command": [
+        "C:\\Users\\13982\\AppData\\Local\\Temp\\cf-helper-audit-3494506fbf0444ffb598e3f4864d193f\\Scripts\\python.exe",
+        "-X",
+        "utf8",
+        "-B",
+        "-W",
+        "error",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "tests",
+        "-v"
+      ],
+      "exit_code": 0,
+      "seconds": 56.084,
+      "tests": 83
+    },
+    "frontend": {
+      "command": [
+        "C:\\Program Files\\nodejs\\node.EXE",
+        "--test",
+        "--test-reporter=tap",
+        "tests/test_frontend.cjs"
+      ],
+      "exit_code": 0,
+      "seconds": 0.153,
+      "tests": 5,
+      "pass": 5,
+      "fail": 0,
+      "skipped": 0,
+      "cancelled": 0
+    },
+    "diff": {
+      "command": [
+        "git",
+        "diff",
+        "--check"
+      ],
+      "exit_code": 0,
+      "seconds": 0.06
+    },
+    "compile": {
+      "exit_code": 0,
+      "python_files": 21
+    }
+  },
+  "boundaries": [
+    "AstrBot host and QQ sending are substituted in tests",
+    "Frontend scripts use a controlled DOM and network in Node.js",
+    "No full AstrBot/QQ deployment or Linux execution is included"
+  ],
+  "live_api": {
+    "passed": true,
+    "updated_members": 1,
+    "api_requests": 3
+  },
+  "passed": true,
+  "sha256_utf8_lf": {
+    "main.py": "5d6b6cc246e5041a720a12c4ffd47a079484875da106ed71fdee6c1ba731bd52",
+    "webui.py": "d6b478e04aea38704f17005e2c705d614b1f7dbe3df57e88241179845a58b8fa",
+    "review/2026-09-13/verify.py": "e3e68b04324b6802595c10918bf3e229601faaefca7c6a2686010a1e15d05ce0",
+    "core/cf_api.py": "28794901f2513989f9282f15468a59fcaf70a7dff7bd3c5a26953dbc977867b7",
+    "core/contest_reminder.py": "7b9b6d026c5ea3cbf671c82a5a8e070598ded76a3f6af9a202be820f4089df33",
+    "core/crawler.py": "4b2290aaa8758579ebab5ccfb2f1f8c27dc55a8e8f5f6e9705a9ef4395b49ad3",
+    "core/rate_limit.py": "bcfcdea7e2c262ec1ddffb10789a7f0eb9745aabb5882baef133ac395fd0ff98",
+    "core/sync_lock.py": "4c6ef783662b5d18c00474ed0a437f5e9bff8ea5705789bfb546af3a3df20141",
+    "core/sync_state.py": "f56a284b3a7ae0919900a33a4cca25266299e2e633d7b1b603d9ca3f8e2eae90",
+    "backend/api.py": "8fb64b6bdc66641ea097374597efdca88001c51db14a4ae717774a074f003e78",
+    "tests/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "tests/runtime_support.py": "a17bb2aeff9f0738ca45e15a9d8fbe39a9901bcf8492eb9a5094fac8a1c58eec",
+    "tests/test_cf_api.py": "f67f1c70a5ec02eeffb7830382d4900066906369d160db628624eadb44aed88f",
+    "tests/test_contest_reminder.py": "1d07de909fcb955f73d1047800c09a68d53dad63666b4721d3519a2a3a39a1d5",
+    "tests/test_contest_reminder_plugin.py": "3815a106b4469dbe5fb54070fe66454bf972a40102fc62b06a27ec67d5c56164",
+    "tests/test_crawler_consistency.py": "46b6e2430799d030df6ca0c5e8af5df35e6d293bb87c1ed017083cb999ba259f",
+    "tests/test_release_config.py": "e6b00e75ea5eb47b5df66b927138a05b3d5d42f65be8612165c01a0d7d9f1b80",
+    "tests/test_revision_regressions.py": "8901889b5632723683c0977ff41b23d46870fefaab12a3c7cfa0c9b7d53616b3",
+    "tests/test_runtime_regressions.py": "2cfc1b81ab7ff67965a3b6a0238167e2a4d204edacec73deff8569e1197c2201",
+    "tests/test_source_regressions.py": "cac7e63c97533ed0262d593557c83fea6c9a04b132229e70974dc86d51112965",
+    "tests/test_sync_lock.py": "a063b6ed2dfd32f4768f36a4af87e963e4b9643c5b867e297d2fb6e49cbca783",
+    "public/index.html": "804f23a11bdd06c101f19bfefb1544816909a30bdc20403ddfc127c542cdd677",
+    "tests/test_frontend.cjs": "0fd3cd9a22b757fb7f05d7c7d5460c5c056678b76b95b43c5d16f76174c08135",
+    "metadata.yaml": "cc20a2939ae763cb9d674a21a7cf297e0e0c604775b033455d94a65b5819871e",
+    "README.md": "7e28a2e96e582182bfadde584c32c30b6fba03f7b602739b4708cb35badea5d3",
+    "CHANGELOG.md": "252bdeb3a0f1cc5c1d6c4fc544bee47e7519f6f8fdb5f8487a5ec26b19c7a929"
+  }
+}

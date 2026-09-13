@@ -110,4 +110,5 @@ class PluginTestCase(unittest.IsolatedAsyncioTestCase):
 
     async def sync(self, now=NOW, days=None):
         with patch.object(main.time, "time", return_value=now):
-            return await self.plugin.sync_single_user("10001", refresh_cf_profile=False, days=days)
+            result = await self.plugin.sync_single_user("10001", refresh_cf_profile=False, days=days)
+            return result.added, result.submissions_complete

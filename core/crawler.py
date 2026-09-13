@@ -140,7 +140,10 @@ class Crawler:
                 else:
                     problem_url = ""
                 verdict = sub.get("verdict") or "SUBMITTED"
-                pending = verdict in {"SUBMITTED", "TESTING"} or sub.get("testset") in {"PRETESTS", "SAMPLES"}
+                # Failed pretests are terminal; CF keeps their PRETESTS label forever.
+                pending = verdict in {"SUBMITTED", "TESTING"} or (
+                    verdict == "OK" and sub.get("testset") in {"PRETESTS", "SAMPLES"}
+                )
                 candidates[str(sub["id"])] = (qq_id, str(sub["id"]), stable_pid, problem_name,
                     str(sub["problem"].get("rating", -1)), problem_url, submission_time, verdict, int(pending))
             if reached_start or len(submissions) < 100:

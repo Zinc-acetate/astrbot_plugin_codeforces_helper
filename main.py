@@ -48,7 +48,7 @@ from .core.contest_reminder import (
 from .core.rate_limit import configure_codeforces_api_rate_limiter
 from .core.sync_lock import acquire_sync_lock, SyncAlreadyRunning
 from .core.sync_state import (
-    initialize_sync_state, plan_sync, finish_sync, delete_member_records,
+    UserSyncResult, initialize_sync_state, plan_sync, finish_sync, delete_member_records,
     ensure_report_group, pending_report, acknowledge_report,
 )
 
@@ -73,7 +73,7 @@ CONTEST_FILTER_SWITCHES = (
     "astrbot_plugin_codeforces_helper",
     "Zinc-acetate",
     "Codeforces 训练、Rating 缓存、比赛提醒与管理助手",
-    "1.3.2",
+    "1.3.3",
 )
 class CodeforcesHelperPlugin(Star):
     db: aiosqlite.Connection
@@ -87,7 +87,7 @@ class CodeforcesHelperPlugin(Star):
         self.FONT_PATH = Path(__file__).parent / "resources" / "SourceHanSansSC-Bold.otf"
 
     async def initialize(self):
-        logger.info("Codeforces Helper v1.3.2 开始初始化...")
+        logger.info("Codeforces Helper v1.3.3 开始初始化...")
         await self.connect_db()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         settings = await self._get_all_settings()
@@ -450,18 +450,19 @@ class CodeforcesHelperPlugin(Star):
             return f"{title_hour_str}没有新的过题记录哦～"
         parts = [f"📖 {title_hour_str}过题速报 (Top {len(recent_solves)}):"]
         for solve in recent_solves:
-            time_str = time.strftime('%H:%M', time.localtime(solve['submit_time']))
+            time_str = datetime.fromtimestamp(solve['submit_time'], SHANGHAI_TZ).strftime('%H:%M')
             parts.append(f"\n👤 {solve['user_name']} 在 {time_str} 通过了\n💻 {solve['platform']} - {solve['problem_name']}\n📈 难度: {solve['problem_rating'] or 'N/A'}\n🔗 {solve['problem_url']}")
         return "\n".join(parts)
 
-    async def sync_single_user(self, qq_id: str, refresh_cf_profile: bool = True, days: int = None):
+    async def sync_single_user(self, qq_id: str, refresh_cf_profile: bool = True,
+                               days: int = None) -> UserSyncResult:
         # A dedicated connection keeps the snapshot transaction separate from chat settings.
         async with aiosqlite.connect(self.db_path, timeout=30) as db:
             db.row_factory = aiosqlite.Row
             async with db.execute("SELECT * FROM users WHERE qq_id = ?", (qq_id,)) as cursor:
                 user = await cursor.fetchone()
-            if not user or not user["cf_handle"]:
-                return 0, False
+            if not user or not (user["cf_handle"] or "").strip():
+                return UserSyncResult(0, False, None)
             now = int(time.time())
             plan = await plan_sync(db, user, now, days)
             logger.info(f"为用户 {user['name']} 同步 CF 提交（起点 {plan.start}）...")
@@ -471,9 +472,10 @@ class CodeforcesHelperPlugin(Star):
                     await finish_sync(db, user, now, plan)
                 else:
                     logger.warning(f"用户 {user['name']} 同步未完整完成，不推进同步时间。")
+                profile_complete = None
                 if refresh_cf_profile:
-                    await Crawler.fetch_cf_profile(session, user, db, self.config)
-            return added, complete
+                    profile_complete = await Crawler.fetch_cf_profile(session, user, db, self.config)
+            return UserSyncResult(added, complete, profile_complete)
 
     async def sync_all_users_data(self):
         logger.info(f"[智能同步] 开始执行 {time.strftime('%H:%M')} 周期的同步任务...")
@@ -665,7 +667,7 @@ class CodeforcesHelperPlugin(Star):
     @staticmethod
     def _format_cf_contest(contest):
         return "比赛名称：{}\n开始时间：{}\n持续时间：{}小时{:02d}分钟\n报名链接：{}".format(
-            contest['name'], time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(int(contest['startTimeSeconds']))),
+            contest['name'], datetime.fromtimestamp(int(contest['startTimeSeconds']), SHANGHAI_TZ).strftime("%Y-%m-%d %H:%M:%S"),
             contest['durationSeconds'] // 3600, contest['durationSeconds'] % 3600 // 60,
             f"https://codeforces.com/contestRegistration/{str(contest['id'])}"
         )
@@ -683,41 +685,23 @@ class CodeforcesHelperPlugin(Star):
 
     @acm_manager.command("rank")
     async def cmd_show_rank(self, event: AstrMessageEvent):
-        """生成近7日刷题量的文本排行榜"""
-        seven_days_ago = int(time.time()) - (7 * 24 * 60 * 60)
-        # 注意: 这里使用 COUNT(s.id) 而不是 COUNT(DISTINCT s.problem_id) 以匹配经典行为
-        query = "SELECT u.name, COUNT(s.id) as total_count FROM users u LEFT JOIN submissions s ON u.qq_id = s.user_qq_id WHERE s.platform = 'codeforces' AND s.submit_time >= ? GROUP BY u.qq_id HAVING total_count > 0 ORDER BY total_count DESC, u.name ASC LIMIT 10"
-
-        async with self.db.execute(query, (seven_days_ago,)) as cursor:
-            top_ten = await cursor.fetchall()
-        if not top_ten:
-            yield event.plain_result("近7日排行榜暂无数据。")
+        """单一入口处理周榜和总榜，避免 AstrBot 前缀匹配触发两个处理器。"""
+        args = event.message_str.strip().split()[2:]
+        if not args:
+            days, title = 7, "近 7 日刷题排行榜"
+        elif len(args) == 1 and args[0].lower() == "all":
+            days, title = None, "生涯总刷题量排行榜"
+        else:
+            yield event.plain_result("参数错误。\n周榜：/acm rank\n总榜：/acm rank all")
             return
-
-        parts = ["🏆 近 7 日刷题排行榜 Top 10 🏆"]
+        top_ten = await self._query_rank_data(days=days, limit=10)
+        if not top_ten:
+            yield event.plain_result(f"{title}暂无数据。")
+            return
+        parts = [f"🏆 {title} Top 10 🏆"]
         emojis = ["🥇", "🥈", "🥉"] + [f"{i}." for i in range(4, 11)]
         for i, user in enumerate(top_ten):
-            parts.append(f"{emojis[i]} {user['name']}: {user['total_count']} 题")
-
-        yield event.plain_result("\n".join(parts))
-
-    @acm_manager.command("rank all")
-    async def cmd_show_rank_all(self, event: AstrMessageEvent):
-        """生成生涯总刷题量的文本排行榜"""
-        query = "SELECT u.name, COUNT(s.id) as total_count FROM users u LEFT JOIN submissions s ON u.qq_id = s.user_qq_id AND s.platform = 'codeforces' GROUP BY u.qq_id HAVING total_count > 0 ORDER BY total_count DESC, u.name ASC LIMIT 10"
-
-        async with self.db.execute(query) as cursor:
-            top_ten = await cursor.fetchall()
-
-        if not top_ten:
-            yield event.plain_result("生涯总榜暂无数据。")
-            return
-
-        parts = ["🏆 生涯总刷题量排行榜 Top 10 🏆"]
-        emojis = ["🥇", "🥈", "🥉"] + [f"{i}." for i in range(4, 11)]
-        for i, user in enumerate(top_ten):
-            parts.append(f"{emojis[i]} {user['name']}: {user['total_count']} 题")
-
+            parts.append(f"{emojis[i]} {user['user_name']}: {user['total_count']} 题")
         yield event.plain_result("\n".join(parts))
 
     @acm_manager.command("hourly")
@@ -779,7 +763,7 @@ class CodeforcesHelperPlugin(Star):
         if not user:
             yield event.plain_result(f"本地成员中没有登记 CF Handle：{handle}")
             return
-        updated = (time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(user['cf_rating_updated_at']))
+        updated = (datetime.fromtimestamp(user['cf_rating_updated_at'], SHANGHAI_TZ).strftime('%Y-%m-%d %H:%M:%S')
                    if user['cf_rating_updated_at'] else '尚未完成首次自动更新')
         current = user['cf_rating'] if user['cf_rating'] is not None else '未定级'
         maximum = user['cf_max_rating'] if user['cf_max_rating'] is not None else '无'
@@ -843,11 +827,18 @@ class CodeforcesHelperPlugin(Star):
         yield event.plain_result(f"收到指令，正在为用户 {qq_id} 执行一次同步任务...")
         try:
             with acquire_sync_lock(self.db_path):
-                _, complete = await self.sync_single_user_for_days(qq_id, days)
+                result = await self.sync_single_user_for_days(qq_id, days)
         except SyncAlreadyRunning as e:
             yield event.plain_result(str(e))
             return
-        yield event.plain_result(f"用户 {qq_id} 的同步任务{'已完成' if complete else '未完整完成，请查看日志后重试'}！")
+        submission_status = "完成" if result.submissions_complete else "失败，请查看日志后重试"
+        profile_status = ("未执行" if result.profile_complete is None else
+                          "完成" if result.profile_complete else "失败，请查看日志后重试")
+        yield event.plain_result(
+            f"用户 {qq_id} 的同步结果：\n"
+            f"提交同步：{submission_status}（新增 {result.added} 题）\n"
+            f"Rating 更新：{profile_status}"
+        )
 
     @acm_manager.command("del_user")
     @filter.permission_type(filter.PermissionType.ADMIN)
@@ -917,7 +908,7 @@ class CodeforcesHelperPlugin(Star):
         if not submissions: yield event.plain_result(f"用户【{user['name']}】暂无过题记录。"); return
         lines = [f"🔍 用户【{user['name']}】最近的20条过题记录:"]
         for sub in submissions:
-            time_str = time.strftime('%Y-%m-%d %H:%M', time.localtime(sub['submit_time']))
+            time_str = datetime.fromtimestamp(sub['submit_time'], SHANGHAI_TZ).strftime('%Y-%m-%d %H:%M')
             lines.append(f"[{time_str}] {sub['platform']} - {sub['problem_name']} (Rating: {sub['problem_rating'] or 'N/A'})")
         yield event.plain_result("\n".join(lines))
 
@@ -965,16 +956,19 @@ class CodeforcesHelperPlugin(Star):
         yield event.plain_result(f"收到指令！正在为所有用户执行【{days}天深度同步】，请耐心等待...")
         try:
             with acquire_sync_lock(self.db_path):
-                async with self.db.execute("SELECT qq_id FROM users") as cursor:
+                async with self.db.execute("SELECT qq_id FROM users WHERE cf_handle IS NOT NULL AND TRIM(cf_handle) != ''") as cursor:
                     all_users = await cursor.fetchall()
-                failed = 0
+                failed = profile_failed = 0
                 for user_row in all_users:
-                    _, complete = await self.sync_single_user_for_days(user_row['qq_id'], days)
-                    failed += int(not complete)
+                    result = await self.sync_single_user_for_days(user_row['qq_id'], days)
+                    failed += int(not result.submissions_complete)
+                    profile_failed += int(result.profile_complete is False)
         except SyncAlreadyRunning as e:
             yield event.plain_result(str(e))
             return
-        yield event.plain_result(f"✅ 同步结束，失败 {failed} 位。正在生成榜单...")
+        yield event.plain_result(
+            f"同步结束：提交同步失败 {failed} 人，Rating 更新失败 {profile_failed} 人。正在生成榜单..."
+        )
         title = f"深度同步 · 近 {days} 天过题排行榜"
         users_data = await self._query_rank_data(days=days, limit=50)
         if not users_data: yield event.plain_result(f"📊 {title}\n\n该条件下暂无过题记录。"); return

@@ -27,10 +27,11 @@ async def request_cf_api(
                 # Preserve that reason so callers can isolate bad members from a batch.
                 if getattr(response, "status", None) == 400:
                     data = await response.json()
-                    if isinstance(data, dict) and data.get("status") == "FAILED":
-                        return data
-                response.raise_for_status()
-                data = await response.json()
+                    if not isinstance(data, dict) or data.get("status") != "FAILED":
+                        response.raise_for_status()
+                else:
+                    response.raise_for_status()
+                    data = await response.json()
         except Exception as exc:
             if getattr(exc, "status", None) == 429 and attempt < rate_limit_retries:
                 continue

@@ -29,6 +29,17 @@ async def initialize_sync_state(db):
             FROM submissions WHERE platform='codeforces'""")
         await db.execute("INSERT INTO settings(key,value) VALUES('submission_history_version','1')")
 
+    # Repair flags persisted by 1.3.2 without dropping history or pending/preview ACs.
+    await db.execute("""UPDATE cf_submission_records SET needs_recheck=0
+        WHERE needs_recheck=1 AND verdict NOT IN ('OK','SUBMITTED','TESTING')""")
+
+
+@dataclass(frozen=True)
+class UserSyncResult:
+    added: int
+    submissions_complete: bool
+    profile_complete: bool | None  # None means no profile request was made.
+
 
 @dataclass(frozen=True)
 class SyncPlan:
