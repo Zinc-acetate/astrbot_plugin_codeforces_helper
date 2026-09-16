@@ -7,6 +7,7 @@ import time
 import os
 import sqlite3
 import secrets
+import base64
 from collections.abc import Mapping
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,9 +30,11 @@ from astrbot.core.utils.astrbot_path import get_astrbot_plugin_data_path
 
 try:
     from PIL import Image as PILImage, ImageDraw, ImageFont
+    from .core.contest_report_image import render_report_pages
 except ImportError:
     logger.error("Pillow 库未安装！图片功能将不可用。")
     PILImage, ImageDraw, ImageFont = None, None, None
+    render_report_pages = None
 
 from .webui import run_server
 from .core.crawler import Crawler
@@ -51,6 +54,7 @@ from .core.sync_state import (
     UserSyncResult, initialize_sync_state, plan_sync, finish_sync, delete_member_records,
     ensure_report_group, pending_report, acknowledge_report,
 )
+from .core import contest_report as contest_reports
 
 
 SHANGHAI_TZ = timezone(timedelta(hours=8), name="Asia/Shanghai")
@@ -72,8 +76,8 @@ CONTEST_FILTER_SWITCHES = (
 @register(
     "astrbot_plugin_codeforces_helper",
     "Zinc-acetate",
-    "Codeforces 训练、Rating 缓存、比赛提醒与管理助手",
-    "1.3.3",
+    "Codeforces 训练、Rating 缓存、比赛提醒、赛后战报与管理助手",
+    "1.3.4",
 )
 class CodeforcesHelperPlugin(Star):
     db: aiosqlite.Connection
@@ -85,9 +89,11 @@ class CodeforcesHelperPlugin(Star):
         super().__init__(context)
         self.config = config or {}
         self.FONT_PATH = Path(__file__).parent / "resources" / "SourceHanSansSC-Bold.otf"
+        self._contest_report_poll_lock = asyncio.Lock()
+        self._contest_report_send_lock = asyncio.Lock()
 
     async def initialize(self):
-        logger.info("Codeforces Helper v1.3.3 开始初始化...")
+        logger.info("Codeforces Helper v1.3.4 开始初始化...")
         await self.connect_db()
         self.scheduler = AsyncIOScheduler(timezone="Asia/Shanghai")
         settings = await self._get_all_settings()
@@ -184,6 +190,7 @@ class CodeforcesHelperPlugin(Star):
                 await self.db.execute(f"ALTER TABLE users ADD COLUMN {column} {sql_type}")
         await self.db.execute("DELETE FROM submissions WHERE platform != 'codeforces'")
         await initialize_sync_state(self.db)
+        await contest_reports.initialize_report_state(self.db)
         await self.db.commit()
 
     async def get_setting(self, key, default=None):
@@ -218,13 +225,14 @@ class CodeforcesHelperPlugin(Star):
         except (TypeError, ValueError):
             interval_minutes = 60
         self.scheduler.add_job(
-            self.sync_all_users_data,
+            self._run_periodic_sync,
             IntervalTrigger(minutes=interval_minutes, timezone="Asia/Shanghai"),
             id='sync_data_job', name='Codeforces data and rating sync', replace_existing=True,
             max_instances=1, coalesce=True,
         )
         self._scheduled_sync_interval = interval_minutes
         logger.info(f"✅ 数据与 CF 分数自动更新间隔：{interval_minutes} 分钟。")
+        await self._configure_contest_report_jobs(settings)
 
     async def _watch_runtime_settings(self):
         """允许 WebUI 修改数据库设置后，无需重启即可重排同步任务。"""
@@ -237,12 +245,223 @@ class CodeforcesHelperPlugin(Star):
             if contest_signature != getattr(self, '_contest_reminder_config_signature', None):
                 self._contest_reminder_config_signature = contest_signature
                 await self.refresh_contest_reminder_jobs()
+            report_signature = self._get_contest_report_signature(await self.get_setting('notification_group_id'))
+            if report_signature != getattr(self, '_contest_report_config_signature', None):
+                await self._configure_contest_report_jobs(await self._get_all_settings())
+            await self.send_pending_contest_reports()
         except Exception as e:
             logger.error(f"检查运行时设置失败: {e}")
 
     def _get_contest_reminder_config(self) -> dict:
         value = self.config.get("contest_reminder", {})
         return dict(value) if isinstance(value, Mapping) else {}
+
+    def _get_contest_report_config(self):
+        value = self.config.get("contest_report", {})
+        return dict(value) if isinstance(value, Mapping) else {}
+
+    def _get_contest_report_signature(self, fallback_group):
+        return json.dumps([self._get_contest_report_config(), fallback_group],
+                          sort_keys=True, ensure_ascii=False, default=str)
+
+    async def _get_contest_report_settings(self):
+        return contest_reports.parse_report_settings(
+            self._get_contest_report_config(), await self.get_setting("notification_group_id"))
+
+    async def _configure_contest_report_jobs(self, settings):
+        fallback = settings.get("notification_group_id")
+        try:
+            options = contest_reports.parse_report_settings(self._get_contest_report_config(), fallback)
+        except ValueError as exc:
+            logger.error(f"赛后战报配置无效，暂不启用：{exc}")
+            options = contest_reports.ReportSettings()
+        async with aiosqlite.connect(self.db_path, timeout=30) as db:
+            db.row_factory = aiosqlite.Row
+            await contest_reports.configure_report_window(db, options, int(time.time()))
+        self._contest_report_config_signature = self._get_contest_report_signature(fallback)
+        try:
+            self.scheduler.remove_job("contest_report_send_job")
+        except JobLookupError:
+            pass
+        if options.enabled and options.send_mode == "scheduled":
+            hour, minute = map(int, options.send_time.split(":"))
+            self.scheduler.add_job(
+                self.send_pending_contest_reports,
+                CronTrigger(hour=hour, minute=minute, timezone=SHANGHAI_TZ),
+                id="contest_report_send_job", name="Codeforces post-contest reports",
+                replace_existing=True, max_instances=1, coalesce=True, misfire_grace_time=900,
+            )
+
+    async def _run_periodic_sync(self):
+        try:
+            await self.sync_all_users_data()
+        except Exception:
+            logger.exception("周期数据同步失败，继续检查赛后战报。")
+        await self.check_contest_reports()
+
+    async def check_contest_reports(self):
+        if not self._config_switch(self._get_contest_report_config(), "enabled"):
+            return
+        if self._contest_report_poll_lock.locked():
+            return
+        async with self._contest_report_poll_lock:
+            try:
+                options = await self._get_contest_report_settings()
+                interval = max(5, min(int(await self.get_setting("sync_interval_minutes", "60")), 1440))
+                with acquire_sync_lock(self.db_path):
+                    async with aiosqlite.connect(self.db_path, timeout=30) as db, aiohttp.ClientSession() as http:
+                        db.row_factory = aiosqlite.Row
+                        window = await contest_reports.report_window(db)
+                        if not window["enabled"]:
+                            return
+                        generation = window["generation"]
+                        async with db.execute("SELECT * FROM users WHERE cf_handle IS NOT NULL AND TRIM(cf_handle)!=''") as cursor:
+                            users = await cursor.fetchall()
+                        if not users:
+                            return
+                        try:
+                            data = await request_cf_api(http, "contest.list", {"gym": "false"}, timeout=30)
+                            if data.get("status") != "OK":
+                                raise ValueError(data.get("comment", "比赛列表查询失败"))
+                            await contest_reports.discover_contests(db, data.get("result"), generation)
+                        except Exception as exc:
+                            logger.warning(f"赛后战报比赛列表刷新失败，继续检查已保存候选：{exc}")
+                        now = int(time.time())
+                        candidates = await contest_reports.pending_contests(db, generation, now)
+                        affected = set()
+                        prepared = []
+                        for candidate in candidates:
+                            if (not self._config_switch(self._get_contest_report_config(), "enabled")
+                                    or not await contest_reports.window_is_current(db, generation)):
+                                break
+                            cid = candidate["contest_id"]
+                            try:
+                                data = await request_cf_api(http, "contest.ratingChanges", {"contestId": cid}, timeout=30)
+                                if data.get("status") != "OK":
+                                    raise ValueError(data.get("comment", "Rating 记录尚不可用"))
+                                changes = data.get("result")
+                                published = contest_reports.rating_publication_time(changes, cid)
+                                if published < window["enabled_since"]:
+                                    await contest_reports.record_contest_check(db, cid, generation, now, interval, "before_enable")
+                                    continue
+                                if (not self._config_switch(self._get_contest_report_config(), "enabled")
+                                        or not await contest_reports.window_is_current(db, generation)):
+                                    break
+                                # The public standings endpoint accepts only contestId, without API credentials.
+                                data = await request_cf_api(http, "contest.standings", {"contestId": cid}, timeout=60)
+                                if data.get("status") != "OK":
+                                    raise ValueError(data.get("comment", "正式榜单查询失败"))
+                                standings = data.get("result")
+                                if not isinstance(standings, dict) or standings.get("contest", {}).get("id") != cid:
+                                    raise ValueError("正式榜单比赛 ID 不匹配")
+                                start = standings["contest"].get("startTimeSeconds")
+                                if type(start) is not int or start <= 0:
+                                    raise ValueError("比赛缺少有效开始时间")
+                                prepared.append((cid, standings, changes))
+                            except Exception as exc:
+                                await contest_reports.record_contest_check(db, cid, generation, now, interval, error=exc)
+                                logger.debug(f"赛后战报 {cid} 待重试：{exc}")
+                        handles = [u["cf_handle"] for u in users]
+                        if prepared and self._config_switch(self._get_contest_report_config(), "enabled"):
+                            since = min(item[1]["contest"]["startTimeSeconds"] for item in prepared)
+                            evidence = await contest_reports.fetch_member_evidence(
+                                http, handles, since, request=request_cf_api)
+                        else:
+                            evidence = {}
+                        for cid, standings, changes in prepared:
+                            if (not self._config_switch(self._get_contest_report_config(), "enabled")
+                                    or not await contest_reports.window_is_current(db, generation)):
+                                break
+                            try:
+                                report = contest_reports.build_report(standings, changes, handles, evidence)
+                                options = await self._get_contest_report_settings()
+                                if not options.enabled:
+                                    break
+                                stored = await contest_reports.save_report(db, report, generation, options, int(time.time()))
+                                await contest_reports.record_contest_check(db, cid, generation, now, interval, "captured")
+                                if stored and report["rows"]:
+                                    affected.update(row["handle"].casefold() for row in report["rows"])
+                                    logger.info(f"已保存赛后战报：{report['contest_name']}，{len(report['rows'])} 位成员（含未计分参赛）。")
+                            except Exception as exc:
+                                await contest_reports.record_contest_check(db, cid, generation, now, interval, error=exc)
+                                logger.debug(f"赛后战报 {cid} 待重试：{exc}")
+                        if affected:
+                            # Refresh current profiles instead of overwriting them with an older contest's rating.
+                            targets = [u for u in users if u["cf_handle"].casefold() in affected]
+                            await Crawler.fetch_cf_profiles(http, targets, db, self.config)
+            except SyncAlreadyRunning:
+                logger.info("赛后战报等待当前数据更新完成，下轮继续检查。")
+            except Exception:
+                logger.exception("赛后战报检查失败，保留待处理记录。")
+        await self.send_pending_contest_reports()
+
+    async def send_pending_contest_reports(self):
+        if not self._config_switch(self._get_contest_report_config(), "enabled"):
+            return
+        if self._contest_report_send_lock.locked():
+            return
+        async with self._contest_report_send_lock:
+            try:
+                options = await self._get_contest_report_settings()
+                if not options.groups:
+                    return
+                if render_report_pages is None:
+                    raise RuntimeError("Pillow 不可用，赛后战报图片暂未生成")
+                with acquire_sync_lock(self.db_path):
+                    async with aiosqlite.connect(self.db_path, timeout=30) as db:
+                        db.row_factory = aiosqlite.Row
+                        window = await contest_reports.report_window(db)
+                        if not window["enabled"]:
+                            return
+                        generation = window["generation"]
+                        records = await contest_reports.due_reports(db, generation, int(time.time()))
+                        if not records:
+                            return
+                        platform = self.context.get_platform("aiocqhttp")
+                        if not platform:
+                            logger.warning("赛后战报待发送：QQ 平台暂不可用。")
+                            return
+                        for record in records:
+                            options = await self._get_contest_report_settings()
+                            if not options.enabled or not await contest_reports.window_is_current(db, generation):
+                                return
+                            if not await contest_reports.report_is_due(db, record["contest_id"], generation, options, int(time.time())):
+                                continue
+                            pages = await asyncio.to_thread(render_report_pages, json.loads(record["report_json"]), self.FONT_PATH)
+                            cid = record["contest_id"]
+                            for group in options.groups:
+                                receipts = await contest_reports.delivered_pages(db, cid, group)
+                                for page, content in enumerate(pages):
+                                    if page in receipts:
+                                        continue
+                                    latest = await self._get_contest_report_settings()
+                                    if not latest.enabled or not await contest_reports.window_is_current(db, generation):
+                                        return
+                                    if not await contest_reports.report_is_due(db, cid, generation, latest, int(time.time())):
+                                        return
+                                    if group not in latest.groups:
+                                        break
+                                    try:
+                                        result = await asyncio.wait_for(platform.bot.send_group_msg(
+                                            group_id=group,
+                                            message=[{"type": "image", "data": {
+                                                "file": "base64://" + base64.b64encode(content).decode("ascii")}}]), timeout=30)
+                                        if isinstance(result, dict) and (result.get("status") == "failed" or result.get("retcode", 0) != 0):
+                                            raise RuntimeError("OneBot 未确认战报发送成功")
+                                        await contest_reports.acknowledge_page(db, cid, group, page, int(time.time()))
+                                    except Exception as exc:
+                                        logger.warning(f"战报 {cid} 向群 {group} 发送失败，将重试：{exc}")
+                                        break
+                            latest = await self._get_contest_report_settings()
+                            complete = bool(latest.groups)
+                            for group in latest.groups:
+                                complete &= len(await contest_reports.delivered_pages(db, cid, group)) >= len(pages)
+                            if complete:
+                                await contest_reports.finish_report(db, cid, generation, int(time.time()))
+            except SyncAlreadyRunning:
+                pass  # The existing one-minute settings watcher retries due deliveries.
+            except Exception:
+                logger.exception("赛后战报发送失败，保留待发送记录。")
 
     def _get_contest_reminder_config_signature(self) -> str:
         return json.dumps(
@@ -739,12 +958,19 @@ class CodeforcesHelperPlugin(Star):
         cron_hour = await self.get_setting('report_cron_hour'); cron_minute = await self.get_setting('report_cron_minute')
         hourly_limit = await self.get_setting('hourly_report_limit', '10')
         sync_interval = await self.get_setting('sync_interval_minutes', '60')
+        try:
+            options = await self._get_contest_report_settings()
+            delivery = "立即发送" if options.send_mode == "immediate" else f"北京时间每天 {options.send_time}"
+            contest_report_status = f"开启，{delivery}" if options.enabled else "关闭"
+        except ValueError as exc:
+            contest_report_status = f"配置无效：{exc}"
         status_text = (f"📊 Codeforces 训练助手当前状态:\n--------------------------\n"
                        f"  - 定时播报: {'✅ 开启' if is_enabled else '❌ 关闭'}\n"
                        f"  - AC 记录与 CF Rating 更新间隔: {sync_interval} 分钟\n"
                        f"  - 近期过题播报上限: {hourly_limit} 题\n"
                        f"  - 目标群聊: {group_id}\n"
-                       f"  - CRON 表达式: 小时={cron_hour}, 分钟={cron_minute}")
+                       f"  - CRON 表达式: 小时={cron_hour}, 分钟={cron_minute}\n"
+                       f"  - 赛后战报: {contest_report_status}")
         yield event.plain_result(status_text)
 
     @acm_manager.command("rating")

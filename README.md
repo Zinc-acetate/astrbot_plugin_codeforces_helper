@@ -1,12 +1,12 @@
 # astrbot_plugin_codeforces_helper
 
-Codeforces 训练、Rating 缓存、排行榜、比赛提醒、定时播报与 Web 管理插件，适用于 AstrBot 的 QQ（aiocqhttp/OneBot）接入。
+Codeforces 训练、Rating 缓存、排行榜、比赛提醒、赛后战报、定时播报与 Web 管理插件，适用于 AstrBot 的 QQ（aiocqhttp/OneBot）接入。
 
 ## 插件信息
 
 - 插件 ID：`astrbot_plugin_codeforces_helper`
 - 显示名称：`Codeforces 训练助手`
-- 当前版本：`1.3.3`
+- 当前版本：`1.3.4`
 - 维护者：`Zinc-acetate`
 - 命令组：`/acm`
 - 功能范围：仅面向 Codeforces；`/acm` 作为历史兼容命令前缀保留，不代表插件仍支持其他 OJ。
@@ -22,6 +22,7 @@ Codeforces 训练、Rating 缓存、排行榜、比赛提醒、定时播报与 W
 - 按统一间隔自动更新过题记录与 Rating。
 - 按设定时间向指定 QQ 群播报近期过题。
 - 按白名单、比赛类型和自定义提前量向指定 QQ 群发送比赛提醒。
+- 保存启用后出分的比赛战报，按排名生成成员表格图片，支持立即或定时发送。
 - 提供带管理员会话保护的 Web 排行榜与成员管理后台。
 - 支持批量新增、更新、删除成员和手动同步。
 - 支持响应式布局以及可持久化的日间、夜间主题。
@@ -66,6 +67,7 @@ git clone https://github.com/Zinc-acetate/astrbot_plugin_codeforces_helper.git
 - `webui_auto_start`：插件启动或热重载后是否自动打开管理后台；后台启动、关闭命令会同步更新该选项。
 - `admin_qq_id`：用于接收重要错误通知的管理员 QQ 号。
 - `contest_reminder`：比赛订阅提醒设置，包含启用开关、群聊白名单、提醒时间和比赛类型过滤。
+- `contest_report`：赛后战报设置，默认关闭，可选择立即或定时发送，并设置发送群。
 - `cf_api_key`：可选的 Codeforces API Key。
 - `cf_api_secret`：与 API Key 配套的可选 Secret。
 
@@ -78,6 +80,33 @@ git clone https://github.com/Zinc-acetate/astrbot_plugin_codeforces_helper.git
 Codeforces API 凭证属于敏感信息，请只在 AstrBot 配置页面或服务器本地配置文件中填写，禁止提交到公开仓库。
 
 比赛提醒默认关闭。启用后，`group_whitelist` 只允许手动配置的群号接收通知，非白名单群聊不会收到提醒。`reminder_times` 使用空格分隔多组时间，纯数字默认按小时解析，并支持 `1min`、`1s`、`1h`、`1d` 等写法；允许范围为 1 秒至 365 天，默认值 `24 1` 表示提前 24 小时和 1 小时提醒。Div. 2、Div. 3、Div. 4、Educational 和其他比赛均可在插件设置界面独立开关。
+
+## 赛后战报
+
+在 AstrBot 插件配置的“赛后战报”中设置：
+
+| 配置项 | 默认值 | 含义 |
+| --- | --- | --- |
+| `enabled` | `false` | 是否启用出分检测及战报发送 |
+| `send_mode` | `immediate` | `immediate` 为发现出分并生成图片后立即发送；`scheduled` 为定时发送 |
+| `send_time` | `09:00` | 定时模式下北京时间每天的发送时刻，格式 `HH:MM` |
+| `group_whitelist` | `[]` | 留空沿用 `/acm set group` 配置的播报群；填写后只向列表中的群发送 |
+
+- 抓取与现有数据同步共用 `sync_interval_minutes`，默认 60 分钟，可在后台修改为 5～1440 分钟。每轮自动同步结束后检查战报；立即发送指检测到新出分后发送。
+- 按官方 `ratingUpdateTimeSeconds` 判断启用边界，不按开赛时间过滤。启用时间持久化，热重载不会重置；关闭会取消本轮待发记录，再次开启重新起算，不补发关闭期间的场次。
+- 每轮最多核查 8 场候选，优先近期已结束比赛，较早候选持续保留并分批续查。空返回、未出分和暂时失败不会被标成已完成。
+- 同一比赛只生成一次快照。一轮发现多场出分时，各场分别存储、分别发送；没有本地成员实时参赛数据的比赛不发送。
+- 统计 `CONTESTANT` 和 `OUT_OF_COMPETITION`，因此超出计分范围、现场参加但不计 Rating 的成员也会展示。排除虚拟比赛、赛后练习及管理者测试提交。多个 QQ 绑定同一 Handle 时，图片仅列一行。
+- 图片标题为比赛名称，列依次为无表头的序号、`Rank`、`Handle`、`Solved`、`Rating change`、`New rating`。计分成员按 Rank 升序排列；未计分成员统一放在最后，按 Solved 降序排列。
+- Rank 和 Rating 变动取自 `user.rating`，与官网个人 Contests 页一致，不使用受限公共 standings 中重新编号的 Rank。成员参赛类型及比赛时段内的通过记录通过 `user.status` 分页核对；不计入赛后补题。
+- 未计分成员的序号、Rank、Rating change 和 New rating 四列均显示 `—`，Solved 保留实际题数；计分成员实际涨跌为零时显示 `0`。
+- 多场比赛共享一次成员资料获取，按需要分页覆盖最早比赛起点。请求失败或数据不完整时保留待处理比赛，不会把缺失数据当成未参赛或零过题。
+- 定时战报在抓取后的下一个设定时刻发送。待发快照和逐群、逐页发送确认保存在数据库中；发送失败、重启或定时任务错过时，由现有一分钟设置检查任务继续处理已到期记录。
+- 未配置发送群时保存待发记录；人数较多时每 40 人一页，保持全场排序和序号。`/acm status` 可查看开关和发送方式。
+
+从旧版本升级后，更新并重载插件，在 AstrBot 插件配置中开启 `contest_report.enabled`，再选择发送方式和群聊即可。战报默认关闭，升级本身不会开启；`/acm report on|off` 只控制近期过题播报，赛后战报使用独立开关。
+
+图片样例与验收结果见 [1.3.4 验收报告](review/2026-09-16/ACCEPTANCE.md)。
 
 ## Web 管理后台
 
@@ -158,7 +187,7 @@ CF Handle 仅接受 3 至 24 位字母、数字、下划线、点和连字符。
 | `/acm del_user <QQ号>` | 删除成员及其本地记录 |
 | `/acm set group <群号>` | 设置播报群 |
 | `/acm set cron <小时> <分钟>` | 设置播报时间 |
-| `/acm report on\|off` | 启用或关闭播报 |
+| `/acm report on\|off` | 启用或关闭近期过题播报 |
 | `/acm set hourly_limit <数量>` | 设置近期播报条数上限 |
 | `/acm 后台启动` | 启动 Web 管理后台 |
 | `/acm 后台关闭` | 关闭 Web 管理后台 |
@@ -190,7 +219,7 @@ CF Handle 仅接受 3 至 24 位字母、数字、下划线、点和连字符。
 data/plugin_data/astrbot_plugin_codeforces_helper/codeforces_helper.db
 ```
 
-数据库保存成员资料、Rating 缓存、原始提交判决、首次有效 AC、同步覆盖起点、群播报确认、同步与播报设置以及后台密码哈希。新增表会在启动时自动迁移，旧 AC 数据在成功复核前保留。该目录独立于插件安装目录，从 GitHub 更新、重装或替换插件源码时不会被覆盖。
+数据库保存成员资料、Rating 缓存、原始提交判决、首次有效 AC、同步覆盖起点、群播报确认、赛后战报启用状态与比赛快照、逐群逐页发送确认、同步与播报设置以及后台密码哈希。新增表会在启动时自动迁移，旧 AC 数据在成功复核前保留。已保存的赛后战报作为历史快照独立保留。该目录独立于插件安装目录，从 GitHub 更新、重装或替换插件源码时不会被覆盖。
 
 同一目录中的 `codeforces_api_rate_limit.db` 和 `codeforces_helper.sync.lock` 仅用于跨进程协调 API 请求与同步任务，不保存成员资料。
 
@@ -233,7 +262,7 @@ node --test tests/test_frontend.cjs
 git diff --check
 ```
 
-测试使用临时数据库，AstrBot 宿主和网络响应由测试替身提供；真实 SQLite、Quart、Pillow、APScheduler 及本机进程锁保留。前端测试执行实际页面脚本并控制响应顺序。最新验收记录见 [1.3.3 验收报告](review/2026-09-13/ACCEPTANCE.md)。
+测试使用临时数据库，AstrBot 宿主和网络响应由测试替身提供；真实 SQLite、Quart、Pillow、APScheduler 及本机进程锁保留。前端测试执行实际页面脚本并控制响应顺序。最新验收记录见 [1.3.4 验收报告](review/2026-09-16/ACCEPTANCE.md)，可运行 `python -X utf8 -B review/2026-09-16/verify_release.py` 复验。
 
 版本更新记录见 [CHANGELOG.md](CHANGELOG.md)。
 

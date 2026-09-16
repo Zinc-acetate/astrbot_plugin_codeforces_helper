@@ -75,6 +75,39 @@
       }
     }
   },
+  "contest_report": {
+    "description": "【CF】赛后战报",
+    "type": "object",
+    "hint": "复用数据同步间隔；仅处理本次开启后出分、且有本地成员现场参赛记录的比赛，包含不计 Rating 的参赛者。",
+    "items": {
+      "enabled": {
+        "description": "启用赛后战报",
+        "type": "bool",
+        "default": false,
+        "hint": "默认关闭。关闭后取消本轮待发战报；再次开启重新记录出分起点，插件重载保留当前起点。"
+      },
+      "send_mode": {
+        "description": "发送方式",
+        "type": "string",
+        "default": "immediate",
+        "options": ["immediate", "scheduled"],
+        "hint": "immediate：发现出分并生成战报后立即发送；scheduled：到北京时间指定时刻发送。"
+      },
+      "send_time": {
+        "description": "定时发送时刻（北京时间）",
+        "type": "string",
+        "default": "09:00",
+        "hint": "scheduled 模式生效，格式 HH:MM，每天一次，例如 21:30。多场比赛会分别发送。"
+      },
+      "group_whitelist": {
+        "description": "战报发送群白名单",
+        "type": "list",
+        "items": {"type": "string"},
+        "default": [],
+        "hint": "留空时沿用 /acm set group 设置的过题播报群；填写后仅向这些群发送。未配置任何群时保留待发记录。"
+      }
+    }
+  },
   "cf_api_key": {
     "description": "【CF-可选】API Key",
     "type": "string",

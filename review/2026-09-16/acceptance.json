@@ -1,0 +1,56 @@
+{
+  "checked_at": "2026-09-16T07:21:58.484508+00:00",
+  "base_commit": "da65a2ffe306bbc29e6c61c54a22d3470fca07d3",
+  "status": "corrected local implementation; awaiting image approval; no commit or push",
+  "environment": {
+    "os": "Windows-11-10.0.26200-SP0",
+    "python": "3.14.6",
+    "packages": {
+      "aiohttp": "3.14.3",
+      "aiosqlite": "0.22.1",
+      "Quart": "0.23.1",
+      "APScheduler": "3.11.3",
+      "Pillow": "12.3.0"
+    }
+  },
+  "checks": {
+    "python_tests": 116,
+    "python_errors": 0,
+    "python_failures": 0,
+    "python_skipped": 0,
+    "new_report_tests": 33,
+    "python_seconds": 135.52,
+    "frontend_tests": 5,
+    "frontend_failures": 0,
+    "compile_python_files": 24,
+    "config_json": true,
+    "diff_check": true,
+    "preview_images_visually_checked": 2,
+    "real_data_regressions": 3,
+    "original_defects_reproduced": 2,
+    "frontend_note": "5 prior passing tests; frontend source unchanged during this correction"
+  },
+  "boundaries": [
+    "AstrBot host and OneBot sending use test doubles",
+    "No real QQ messages sent",
+    "No Linux execution"
+  ],
+  "source_sha256_utf8_lf": {
+    "main.py": "d294c958e3542808e5a110bf894f11f4ce906a7f6a50081b3b1abff84c1507fc",
+    "_conf_schema.json": "21093d4cbf4891186f415fd17339704f0f4df13fc16ea05e3a3113367a3e1aee",
+    "core/contest_report.py": "b0f3eb19704016c9615ee1f5b3ff089c5a6f6e79e6f46578e641e18abcf70a7c",
+    "core/contest_report_image.py": "0c4129effd9853d6b58e8b23a8a7765b22c8f02bbe28928e6db0d07be4f0f735",
+    "tests/test_contest_report.py": "0e8f2354a992f4a8025db46ced7f87f6032776a4845fe1bb3d33712179957ea8",
+    "README.md": "46a28d4c3151b2ce2751d91692dab9ce4c8ed7902920c7bda04fa1bc03b09c8f",
+    "PLUGIN_STRUCTURE.md": "3f067dc4d2b5f4e1d887df5ed38b6e2c5e0a2a4fd6aa14ee6a9179898f31bf68",
+    "CHANGELOG.md": "ac0d49f904463a6ef0e1381decfed32ab956e474b1f348010fad5d0934a9a97e",
+    "review/2026-09-16/make_preview.py": "b336d1eb041efda82aad6ad5080379c364cfc1b97afb6c0176fafcb830365cf3",
+    "tests/fixtures/contest_reports_2262_2264.json": "7144e655ecfae717923bd99ceed2e773ca55d969b243fbe65b98458a2a6a14cd"
+  },
+  "image_sha256": {
+    "review/2026-09-16/contest-2262-corrected-page-1.png": "71d3eec03a7a116cec15354046779745b7d5fcbef2a137adf5d1a4b2d62e4e80",
+    "review/2026-09-16/contest-2264-corrected-page-1.png": "c73499a0b316c66904ca9d2bee2a738d2252e34da569f4d5ee1cef698eccb78d"
+  },
+  "rank_basis": "personal_contest_history",
+  "unrated_display": "Unranked last, solved descending; sequence/rank/rating change/new rating use em dash"
+}

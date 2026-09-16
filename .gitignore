@@ -54,3 +54,8 @@ test_luogu_api.py
 users.json
 backups/
 *.bak
+
+# Local report diagnostics and duplicate preview aliases; keep curated release evidence.
+/review/2026-09-16/correction/
+/review/2026-09-16/contest-2262-page-1.png
+/review/2026-09-16/contest-2264-page-1.png

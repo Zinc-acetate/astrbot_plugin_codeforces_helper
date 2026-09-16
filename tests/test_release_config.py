@@ -52,13 +52,15 @@ class ReleaseMetadataTests(unittest.TestCase):
             and isinstance(decorator.func, ast.Name)
             and decorator.func.id == "register"
         )
-        self.assertEqual(register_call.args[-1].value, "1.3.3")
-        self.assertIn("Codeforces Helper v1.3.3", main_source)
-        self.assertIn("当前版本：`1.3.3`", readme)
-        self.assertRegex(metadata, r"(?m)^version: 1\.3\.3$")
+        self.assertEqual(register_call.args[-1].value, "1.3.4")
+        self.assertIn("Codeforces Helper v1.3.4", main_source)
+        self.assertIn("当前版本：`1.3.4`", readme)
+        self.assertRegex(metadata, r"(?m)^version: 1\.3\.4$")
 
     def test_changelog_has_requested_entry(self):
         changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.assertIn("## 1.3.4", changelog)
+        self.assertIn("添加默认关闭的赛后战报", changelog)
         self.assertIn("## 1.3.3", changelog)
         self.assertIn("修复预判 WA/TLE", changelog)
         self.assertIn("## 1.3.2", changelog)
